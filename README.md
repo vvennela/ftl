@@ -50,7 +50,7 @@ FTL has two layers:
 The security infrastructure. Runs agents in isolated Docker containers (Virtualization.framework VMs on the roadmap). Handles shadow credential injection, network proxy for key swapping, snapshot/restore, and audit logging. **This is what the MVP delivers.**
 
 ### Cockpit (The Shell)
-The natural language interface. An interactive shell where you issue commands, review diffs, ask questions about changes, manage snapshots, and control the full workflow. Future versions will include intent parsing via LLM planners (Nova Lite, Claude, GPT, Ollama) to break complex tasks into executable steps.
+The natural language interface. An interactive shell where you issue commands, review diffs, ask questions about changes, manage your file-system and control your computer - all with natural language. Future versions will include intent parsing via LLM planners (Nova Lite, Claude, GPT, Ollama) to break complex tasks into executable steps.
 
 ---
 
