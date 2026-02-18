@@ -3,6 +3,8 @@ from pathlib import Path
 
 FTLCONFIG = ".ftlconfig"
 
+REQUIRED_KEYS = {"agent", "tester"}
+
 DEFAULT_CONFIG = {
     "planner_model": "bedrock/amazon.nova-lite-v1:0",
     "agent": "claude-code",
@@ -23,7 +25,18 @@ def find_config():
 def load_config():
     config_path = find_config()
     if config_path:
-        return {**DEFAULT_CONFIG, **json.loads(config_path.read_text())}
+        try:
+            raw = json.loads(config_path.read_text())
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in {config_path}: {e}")
+
+        config = {**DEFAULT_CONFIG, **raw}
+
+        missing = REQUIRED_KEYS - set(config.keys())
+        if missing:
+            raise ValueError(f"Missing required keys in .ftlconfig: {missing}")
+
+        return config
     return DEFAULT_CONFIG.copy()
 
 

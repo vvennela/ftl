@@ -7,6 +7,7 @@ dependencies = [
     "click>=8.1",
     "litellm>=1.40",
     "rich>=13.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -4,6 +4,26 @@ import litellm
 from rich.console import Console
 from rich.text import Text
 
+BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
+    ".woff", ".woff2", ".ttf", ".eot",
+    ".zip", ".tar", ".gz", ".bz2",
+    ".pdf", ".doc", ".docx",
+    ".pyc", ".pyo", ".so", ".dylib", ".dll",
+}
+
+
+def _is_binary(file_path):
+    """Check if a file is binary."""
+    if file_path.suffix.lower() in BINARY_EXTENSIONS:
+        return True
+    try:
+        with open(file_path, "rb") as f:
+            chunk = f.read(8192)
+            return b"\x00" in chunk
+    except OSError:
+        return False
+
 
 def compute_diff(snapshot_path, workspace_path):
     """Compare snapshot against workspace. Returns list of file diffs."""
@@ -24,6 +44,9 @@ def compute_diff(snapshot_path, workspace_path):
     diffs = []
 
     for rel in sorted(snapshot_files - workspace_files):
+        if _is_binary(snapshot_path / rel):
+            diffs.append({"path": str(rel), "status": "deleted", "lines": [("-", "[binary file]")]})
+            continue
         old_lines = (snapshot_path / rel).read_text(errors="replace").splitlines()
         diffs.append({
             "path": str(rel),
@@ -32,6 +55,9 @@ def compute_diff(snapshot_path, workspace_path):
         })
 
     for rel in sorted(workspace_files - snapshot_files):
+        if _is_binary(workspace_path / rel):
+            diffs.append({"path": str(rel), "status": "created", "lines": [("+", "[binary file]")]})
+            continue
         new_lines = (workspace_path / rel).read_text(errors="replace").splitlines()
         diffs.append({
             "path": str(rel),
@@ -40,8 +66,14 @@ def compute_diff(snapshot_path, workspace_path):
         })
 
     for rel in sorted(snapshot_files & workspace_files):
-        old_text = (snapshot_path / rel).read_text(errors="replace").splitlines()
-        new_text = (workspace_path / rel).read_text(errors="replace").splitlines()
+        old_file = snapshot_path / rel
+        new_file = workspace_path / rel
+        if _is_binary(old_file) or _is_binary(new_file):
+            if old_file.read_bytes() != new_file.read_bytes():
+                diffs.append({"path": str(rel), "status": "modified", "lines": [(" ", "[binary file changed]")]})
+            continue
+        old_text = old_file.read_text(errors="replace").splitlines()
+        new_text = new_file.read_text(errors="replace").splitlines()
         if old_text == new_text:
             continue
 
@@ -161,14 +193,17 @@ def review_diff(diffs, model):
 
     while True:
         console.print()
-        console.print("[bold]  [A]pprove  [R]eject  or ask a question[/bold]")
-        choice = input("  > ").strip()
+        console.print("[bold]  [A]pprove  [R]eject  [Q]uit  or ask a question[/bold]")
+        try:
+            choice = input("  > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return False
 
         if not choice:
             continue
         if choice.lower() in ("a", "approve"):
             return True
-        if choice.lower() in ("r", "reject"):
+        if choice.lower() in ("r", "reject", "q", "quit", "exit"):
             return False
 
         ask_about_diff(diffs, choice, model)

@@ -38,12 +38,12 @@ def run_tests_with_model(diffs, model, sandbox):
 
     test_code = response.choices[0].message.content
 
-    if test_code.startswith("```"):
-        lines = test_code.splitlines()
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        test_code = "\n".join(lines)
+    # Strip markdown code fences — handle ```python, ```js, ``` etc.
+    import re
+    fence_pattern = re.compile(r"^```\w*\n(.*?)```$", re.DOTALL)
+    match = fence_pattern.search(test_code.strip())
+    if match:
+        test_code = match.group(1)
 
     sandbox.exec(f"cat > /workspace/_ftl_test.py << 'FTLEOF'\n{test_code}\nFTLEOF")
     exit_code, stdout, stderr = sandbox.exec(
@@ -185,4 +185,7 @@ def run_task(task):
         console.print(f"[dim]Snapshot {snapshot_id} available for rollback.[/dim]")
 
     finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+        try:
+            shutil.rmtree(workspace)
+        except OSError as e:
+            console.print(f"[yellow]Warning: Failed to clean up {workspace}: {e}[/yellow]")

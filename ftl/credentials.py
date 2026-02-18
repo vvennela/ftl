@@ -1,6 +1,7 @@
 import os
 import secrets
 from pathlib import Path
+from dotenv import dotenv_values
 
 SHADOW_PREFIX = "ftl_shadow_"
 
@@ -19,16 +20,11 @@ def load_real_keys(project_path, extra_vars=None):
     """
     real_keys = {}
 
-    # Everything in .env is sensitive
+    # Everything in .env is sensitive — use python-dotenv for robust parsing
     env_file = Path(project_path) / ".env"
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip("\"'")
+        parsed = dotenv_values(env_file)
+        for key, value in parsed.items():
             if value:
                 real_keys[key] = value
 
