@@ -7,6 +7,7 @@ from rich.console import Console
 from ftl.config import load_config, find_config
 from ftl.credentials import build_shadow_map
 from ftl.ignore import get_ignore_set, should_ignore
+from ftl.log import write_log
 from ftl.snapshot import create_snapshot_store
 from ftl.sandbox import create_sandbox
 from ftl.diff import display_diff, review_diff
@@ -89,6 +90,7 @@ class Session:
         self.snapshot_path = None
         self.diffs = None
         self.shadow_env = None
+        self.task = None
 
     def start(self, task):
         """Start a new coding session with the given task."""
@@ -131,7 +133,17 @@ class Session:
         self.planner = PlannerLoop(
             self.config, self.sandbox, self.snapshot_path, self.workspace
         )
+        self.task = task
         self.diffs = self.planner.run(task)
+
+        write_log({
+            "event": "session_start",
+            "task": task,
+            "snapshot": self.snapshot_id,
+            "project": self.project_path,
+            "agent": self.agent_name,
+            "files_changed": len(self.diffs) if self.diffs else 0,
+        })
 
         if not self.diffs:
             self.console.print("[dim]No changes detected.[/dim]")
@@ -187,14 +199,37 @@ class Session:
             self.console.print("[bold green]Approved. Merging changes...[/bold green]")
             _merge_changes(self.diffs, self.workspace, self.project_path)
             self.console.print("  Changes merged to project.")
+            write_log({
+                "event": "merge",
+                "task": self.task or "",
+                "snapshot": self.snapshot_id,
+                "project": self.project_path,
+                "result": "merged",
+                "files_changed": len(self.diffs),
+                "lint_violations": len(violations),
+            })
         else:
             self.console.print("[bold red]Rejected. Changes discarded.[/bold red]")
+            write_log({
+                "event": "review",
+                "task": self.task or "",
+                "snapshot": self.snapshot_id,
+                "project": self.project_path,
+                "result": "rejected",
+            })
 
         self._cleanup()
 
     def reject(self):
         """Discard changes and clean up."""
         self.console.print("[bold red]Changes discarded.[/bold red]")
+        write_log({
+            "event": "reject",
+            "task": self.task or "",
+            "snapshot": self.snapshot_id,
+            "project": self.project_path,
+            "result": "rejected",
+        })
         self._cleanup()
 
     def _cleanup(self):

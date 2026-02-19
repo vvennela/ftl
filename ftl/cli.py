@@ -1,7 +1,13 @@
+import json
+from datetime import datetime
+from pathlib import Path
+
 import click
 from rich.console import Console
+from rich.table import Table
 from ftl.config import load_config, init_config, find_config
 from ftl.credentials import load_ftl_credentials, save_ftl_credential
+from ftl.log import LOGS_FILE
 from ftl.orchestrator import run_task, Session
 
 
@@ -51,6 +57,98 @@ def code(task):
         raise SystemExit(1)
 
     run_task(task)
+
+
+@main.command()
+@click.option("--all", "show_all", is_flag=True, help="Show snapshots for all projects.")
+def snapshots(show_all):
+    """List project snapshots. Use --all for all projects."""
+    from ftl.snapshot import create_snapshot_store
+
+    console = Console()
+    store = create_snapshot_store()
+
+    config_path = find_config()
+    if not show_all and not config_path:
+        console.print("[red]No .ftlconfig found. Use --all or run 'ftl init'.[/red]")
+        raise SystemExit(1)
+
+    project_filter = str(config_path.parent) if config_path and not show_all else None
+    snapshot_list = store.list(project_filter)
+
+    if not snapshot_list:
+        console.print("[dim]No snapshots found.[/dim]")
+        return
+
+    table = Table(title="Snapshots")
+    table.add_column("ID", style="bold cyan")
+    table.add_column("Project", style="dim")
+    table.add_column("Created", style="dim")
+
+    for s in snapshot_list:
+        snap_path = Path.home() / ".ftl" / "snapshots" / s["id"]
+        created = datetime.fromtimestamp(snap_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        table.add_row(s["id"], s["project"], created)
+
+    console.print(table)
+
+
+@main.command()
+@click.option("-n", "--limit", default=20, help="Number of log entries to show.")
+@click.option("--all", "show_all", is_flag=True, help="Show logs for all projects.")
+def logs(limit, show_all):
+    """Show session audit log."""
+    console = Console()
+
+    if not LOGS_FILE.exists():
+        console.print("[dim]No logs yet. Run a task first.[/dim]")
+        return
+
+    config_path = find_config()
+    project_filter = str(config_path.parent) if config_path and not show_all else None
+
+    entries = []
+    for line in LOGS_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if project_filter and entry.get("project") != project_filter:
+            continue
+        entries.append(entry)
+
+    if not entries:
+        console.print("[dim]No logs found.[/dim]")
+        return
+
+    table = Table(title="Session Log")
+    table.add_column("Time", style="dim")
+    table.add_column("Event", style="bold")
+    table.add_column("Task", max_width=50)
+    table.add_column("Snapshot", style="cyan")
+    table.add_column("Result", style="bold")
+
+    for entry in entries[-limit:]:
+        ts = entry.get("timestamp", "")
+        if ts:
+            try:
+                ts = datetime.fromisoformat(ts).strftime("%m-%d %H:%M")
+            except ValueError:
+                pass
+        result = entry.get("result", "")
+        result_style = {"merged": "[green]merged[/green]", "rejected": "[red]rejected[/red]"}.get(result, result)
+        table.add_row(
+            ts,
+            entry.get("event", ""),
+            entry.get("task", "")[:50],
+            entry.get("snapshot", ""),
+            result_style,
+        )
+
+    console.print(table)
 
 
 SESSION_COMMANDS = {
