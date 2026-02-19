@@ -1,121 +1,44 @@
+import os
 import shutil
 import tempfile
 from pathlib import Path
 from rich.console import Console
-import litellm
 
 from ftl.config import load_config, find_config
 from ftl.credentials import build_shadow_map
+from ftl.ignore import get_ignore_set, should_ignore
 from ftl.snapshot import create_snapshot_store
 from ftl.sandbox import create_sandbox
-from ftl.agents import get_agent, AGENTS
-from ftl.diff import compute_diff, diff_to_text, review_diff
+from ftl.diff import display_diff, review_diff
+from ftl.planner import PlannerLoop
 
 
-def run_tests_with_model(diffs, model, sandbox):
-    """Generate and run tests using an LLM model via LiteLLM."""
-    diff_text = diff_to_text(diffs)
-
-    response = litellm.completion(
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an adversarial test engineer. Given code changes, generate "
-                    "a test script that tries to break the code. Focus on edge cases, "
-                    "null inputs, boundary conditions, and unexpected usage. Your goal is "
-                    "to find bugs. Output ONLY the test script, no explanation. Use the "
-                    "appropriate test framework (pytest for Python, jest/vitest for JS/TS)."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Write tests to find bugs in these changes:\n\n{diff_text}",
-            },
-        ],
-    )
-
-    test_code = response.choices[0].message.content
-
-    # Strip markdown code fences — handle ```python, ```js, ``` etc.
-    import re
-    fence_pattern = re.compile(r"^```\w*\n(.*?)```$", re.DOTALL)
-    match = fence_pattern.search(test_code.strip())
-    if match:
-        test_code = match.group(1)
-
-    sandbox.exec(f"cat > /workspace/_ftl_test.py << 'FTLEOF'\n{test_code}\nFTLEOF")
-    exit_code, stdout, stderr = sandbox.exec(
-        "cd /workspace && python -m pytest _ftl_test.py -v 2>&1 || node _ftl_test.py 2>&1"
-    )
-    sandbox.exec("rm -f /workspace/_ftl_test.py")
-
-    return exit_code, stdout, stderr
+# Agent auth env vars to forward from host into sandbox.
+AGENT_AUTH_VARS = {
+    "claude-code": ["ANTHROPIC_API_KEY"],
+    "kiro": ["KIRO_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"],
+}
 
 
-def run_tests_with_agent(diffs, agent_name, sandbox):
-    """Run tests using a coding agent inside the sandbox."""
-    diff_text = diff_to_text(diffs)
-    agent = get_agent(agent_name)
-
-    task = (
-        "Review the following code changes and write tests that try to break them. "
-        "Focus on edge cases, null inputs, boundary conditions, and unexpected usage. "
-        "Run the tests and report results.\n\n"
-        f"{diff_text}"
-    )
-
-    exit_code, stdout, stderr = agent.run(task, "/workspace")
-    return exit_code, stdout, stderr
+def _collect_agent_env(agent_name, config):
+    """Collect auth env vars for the agent from the host environment."""
+    env = {}
+    for key in AGENT_AUTH_VARS.get(agent_name, []):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    for key in config.get("agent_env", []):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return env
 
 
-def run_verification(diffs, tester, sandbox):
-    """Route to model or agent based on tester config."""
-    console = Console()
-    console.print(f"[bold]Running verification ({tester})...[/bold]")
-
-    if tester in AGENTS:
-        exit_code, stdout, stderr = run_tests_with_agent(diffs, tester, sandbox)
-    else:
-        exit_code, stdout, stderr = run_tests_with_model(diffs, tester, sandbox)
-
-    if exit_code == 0:
-        console.print("[green]  Tests passed.[/green]")
-    else:
-        console.print("[yellow]  Tests failed:[/yellow]")
-        console.print(f"[dim]{stdout}{stderr}[/dim]")
-
-    return exit_code, stdout, stderr
-
-
-def run_task(task):
-    """Execute the full FTL flow for a coding task."""
-    console = Console()
-    config = load_config()
-
-    config_path = find_config()
-    project_path = str(config_path.parent)
-
-    # Validate tester != agent
-    agent_name = config.get("agent", "claude-code")
-    tester = config.get("tester", "bedrock/deepseek-r1")
-    if tester == agent_name:
-        console.print("[red]Error: tester cannot be the same as agent.[/red]")
-        console.print("[red]Change 'tester' in .ftlconfig to a different agent or model.[/red]")
-        raise SystemExit(1)
-
-    # 1. Snapshot
-    console.print("[bold]Snapshotting project...[/bold]")
-    snapshot_store = create_snapshot_store()
-    snapshot_id = snapshot_store.create(project_path)
-    snapshot_path = str(Path.home() / ".ftl" / "snapshots" / snapshot_id)
-    console.print(f"  Snapshot: {snapshot_id}")
-
-    # 2. Copy project to temp workspace
-    workspace = tempfile.mkdtemp(prefix="ftl_workspace_")
-    for item in Path(project_path).rglob("*"):
-        relative = item.relative_to(project_path)
+def _copy_project_to_workspace(project_path, workspace, ignore_set):
+    """Copy project to temp workspace, respecting ignore rules."""
+    project = Path(project_path)
+    for item in project.rglob("*"):
+        relative = item.relative_to(project)
+        if should_ignore(relative, ignore_set):
+            continue
         dest = Path(workspace) / relative
         if item.is_dir():
             dest.mkdir(parents=True, exist_ok=True)
@@ -123,69 +46,171 @@ def run_task(task):
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, dest)
 
-    try:
-        # 3. Build shadow credentials
-        extra_vars = config.get("shadow_env", [])
-        shadow_env, swap_table = build_shadow_map(project_path, extra_vars)
+
+def _merge_changes(diffs, workspace, project_path):
+    """Apply only the actual changes back to the project (diff-driven merge)."""
+    workspace = Path(workspace)
+    project = Path(project_path)
+
+    for diff in diffs:
+        rel = Path(diff["path"])
+        if diff["status"] in ("created", "modified"):
+            src = workspace / rel
+            dest = project / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+        elif diff["status"] == "deleted":
+            target = project / rel
+            if target.exists():
+                target.unlink()
+
+
+class Session:
+    """An active FTL coding session.
+
+    Manages the sandbox, planner loop, and workspace for a task.
+    Supports follow-up messages, manual test/diff/merge commands.
+    """
+
+    def __init__(self):
+        self.console = Console()
+        self.config = load_config()
+        self.config_path = find_config()
+        self.project_path = str(self.config_path.parent)
+
+        self.agent_name = self.config.get("agent", "claude-code")
+        self.tester = self.config.get("tester", "bedrock/deepseek-r1")
+
+        self.sandbox = None
+        self.planner = None
+        self.workspace = None
+        self.snapshot_id = None
+        self.snapshot_path = None
+        self.diffs = None
+
+    def start(self, task):
+        """Start a new coding session with the given task."""
+        # Validate
+        if self.tester == self.agent_name:
+            self.console.print("[red]Error: tester cannot be the same as agent.[/red]")
+            raise SystemExit(1)
+
+        # 1. Snapshot
+        self.console.print("[bold]Snapshotting project...[/bold]")
+        snapshot_store = create_snapshot_store()
+        self.snapshot_id = snapshot_store.create(self.project_path)
+        self.snapshot_path = str(Path.home() / ".ftl" / "snapshots" / self.snapshot_id)
+        self.console.print(f"  Snapshot: {self.snapshot_id}")
+
+        # 2. Copy to workspace (filtered)
+        ignore_set = get_ignore_set(self.project_path)
+        self.workspace = tempfile.mkdtemp(prefix="ftl_workspace_")
+        _copy_project_to_workspace(self.project_path, self.workspace, ignore_set)
+
+        # 3. Shadow credentials
+        extra_vars = self.config.get("shadow_env", [])
+        shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
         if shadow_env:
-            console.print(f"  Shadow credentials: {len(shadow_env)} keys injected")
+            self.console.print(f"  Shadow credentials: {len(shadow_env)} keys injected")
 
-        # 4. Boot sandbox
-        console.print("[bold]Booting sandbox...[/bold]")
-        sandbox = create_sandbox()
-        sandbox.boot(workspace, credentials=shadow_env)
-        console.print("  Sandbox ready")
+        # 4. Agent auth
+        agent_env = _collect_agent_env(self.agent_name, self.config)
+        if agent_env:
+            self.console.print(f"  Agent auth: {len(agent_env)} keys forwarded")
 
-        # 5. Run agent
-        console.print(f"[bold]Running agent ({agent_name})...[/bold]")
-        agent = get_agent(agent_name)
-        exit_code, stdout, stderr = agent.run(task, "/workspace")
+        # 5. Boot sandbox
+        self.console.print("[bold]Booting sandbox...[/bold]")
+        self.sandbox = create_sandbox()
+        self.sandbox.boot(self.workspace, credentials=shadow_env, agent_env=agent_env)
+        self.console.print("  Sandbox ready")
 
-        if exit_code != 0:
-            console.print(f"[red]Agent exited with code {exit_code}[/red]")
-            if stderr:
-                console.print(f"[red]{stderr}[/red]")
+        # 6. Create planner and run
+        self.planner = PlannerLoop(
+            self.config, self.sandbox, self.snapshot_path, self.workspace
+        )
+        self.diffs = self.planner.run(task)
 
-        # 6. Compute diff
-        console.print("[bold]Computing diff...[/bold]")
-        diffs = compute_diff(snapshot_path, workspace)
+        if not self.diffs:
+            self.console.print("[dim]No changes detected.[/dim]")
 
-        if not diffs:
-            console.print("[dim]No changes detected.[/dim]")
-            sandbox.standby()
+    def follow_up(self, message):
+        """Send a follow-up instruction to the planner (continues the session)."""
+        if not self.planner:
+            self.console.print("[red]No active session. Type a task first.[/red]")
             return
 
-        # 7. Verification
-        test_exit, test_stdout, test_stderr = run_verification(diffs, tester, sandbox)
+        self.planner.inject_message(message)
+        self.diffs = self.planner.run(message)
 
-        # 8. Interactive review
-        if test_exit != 0:
-            console.print("[yellow]Tests failed. Review carefully.[/yellow]")
+    def show_diff(self):
+        """Display the current diff."""
+        if not self.diffs:
+            from ftl.diff import compute_diff
+            self.diffs = compute_diff(self.snapshot_path, self.workspace)
+        display_diff(self.diffs)
 
-        planner_model = config.get("planner_model", "bedrock/amazon.nova-lite-v1:0")
-        approved = review_diff(diffs, planner_model)
+    def run_tests(self):
+        """Manually trigger tests."""
+        if not self.sandbox:
+            self.console.print("[red]No active session.[/red]")
+            return
+        from ftl.diff import compute_diff
+        from ftl.planner import run_verification
+        self.diffs = compute_diff(self.snapshot_path, self.workspace)
+        if not self.diffs:
+            self.console.print("[dim]No changes to test.[/dim]")
+            return
+        run_verification(self.diffs, self.tester, self.sandbox)
 
-        # 9. Merge or discard
+    def merge(self):
+        """Approve and merge changes back to the project."""
+        if not self.diffs:
+            self.console.print("[dim]No changes to merge.[/dim]")
+            return
+
+        planner_model = self.config.get("planner_model", "bedrock/amazon.nova-lite-v1:0")
+        approved = review_diff(self.diffs, planner_model)
+
         if approved:
-            console.print("[bold green]Approved. Merging changes...[/bold green]")
-            for item in Path(workspace).rglob("*"):
-                relative = item.relative_to(workspace)
-                dest = Path(project_path) / relative
-                if item.is_dir():
-                    dest.mkdir(parents=True, exist_ok=True)
-                else:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dest)
-            console.print("  Changes merged to project.")
+            self.console.print("[bold green]Approved. Merging changes...[/bold green]")
+            _merge_changes(self.diffs, self.workspace, self.project_path)
+            self.console.print("  Changes merged to project.")
         else:
-            console.print("[bold red]Rejected. Changes discarded.[/bold red]")
+            self.console.print("[bold red]Rejected. Changes discarded.[/bold red]")
 
-        # 10. Standby
-        sandbox.standby()
-        console.print(f"[dim]Snapshot {snapshot_id} available for rollback.[/dim]")
+        self._cleanup()
 
-    finally:
-        try:
-            shutil.rmtree(workspace)
-        except OSError as e:
-            console.print(f"[yellow]Warning: Failed to clean up {workspace}: {e}[/yellow]")
+    def reject(self):
+        """Discard changes and clean up."""
+        self.console.print("[bold red]Changes discarded.[/bold red]")
+        self._cleanup()
+
+    def _cleanup(self):
+        """Clean up sandbox and workspace."""
+        if self.sandbox:
+            self.sandbox.standby()
+            self.console.print(f"[dim]Snapshot {self.snapshot_id} available for rollback.[/dim]")
+        if self.workspace:
+            try:
+                shutil.rmtree(self.workspace)
+            except OSError as e:
+                self.console.print(f"[yellow]Warning: Failed to clean up {self.workspace}: {e}[/yellow]")
+        self.sandbox = None
+        self.planner = None
+        self.workspace = None
+        self.diffs = None
+
+    @property
+    def is_active(self):
+        return self.planner is not None
+
+
+def run_task(task):
+    """One-shot mode: run task, review, merge/reject, done."""
+    session = Session()
+    session.start(task)
+
+    if session.diffs:
+        session.merge()  # triggers interactive review
+    else:
+        session._cleanup()

@@ -2,40 +2,9 @@ import shutil
 import uuid
 from pathlib import Path
 from ftl.snapshot.base import SnapshotStore
+from ftl.ignore import get_ignore_set, should_ignore
 
 SNAPSHOT_DIR = Path.home() / ".ftl" / "snapshots"
-
-ALWAYS_IGNORE = {
-    "node_modules",
-    ".git",
-    "__pycache__",
-    ".env",
-    "venv",
-    ".venv",
-    "dist",
-    "build",
-    ".next",
-    ".ftl",
-}
-
-
-def _load_ftlignore(project_path):
-    ignore_file = Path(project_path) / ".ftlignore"
-    if not ignore_file.exists():
-        return set()
-    patterns = set()
-    for line in ignore_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            patterns.add(line)
-    return patterns
-
-
-def _should_ignore(path, ignore_set):
-    for part in path.parts:
-        if part in ignore_set:
-            return True
-    return False
 
 
 class LocalSnapshotStore(SnapshotStore):
@@ -45,7 +14,7 @@ class LocalSnapshotStore(SnapshotStore):
         snapshot_id = uuid.uuid4().hex[:8]
         snapshot_path = SNAPSHOT_DIR / snapshot_id
 
-        ignore_set = ALWAYS_IGNORE | _load_ftlignore(project_path)
+        ignore_set = get_ignore_set(project_path)
 
         snapshot_path.mkdir(parents=True, exist_ok=True)
 
@@ -54,7 +23,7 @@ class LocalSnapshotStore(SnapshotStore):
 
         for item in project_path.rglob("*"):
             relative = item.relative_to(project_path)
-            if _should_ignore(relative, ignore_set):
+            if should_ignore(relative, ignore_set):
                 continue
             dest = snapshot_path / relative
             if item.is_dir():

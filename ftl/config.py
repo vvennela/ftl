@@ -9,6 +9,7 @@ DEFAULT_CONFIG = {
     "planner_model": "bedrock/amazon.nova-lite-v1:0",
     "agent": "claude-code",
     "tester": "bedrock/deepseek-r1",
+    "planner_max_steps": 20,
 }
 
 

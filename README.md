@@ -25,32 +25,42 @@ ftl code "build login component with Supabase auth"
 │  1. SNAPSHOT project state                      │
 │  2. BOOT sandbox (Docker container)             │
 │  3. INJECT shadow credentials (fake API keys)   │
-│  4. RUN agent inside sandbox                    │
-│  5. PROXY outbound calls — swap shadow keys     │
-│     for real keys at the wire level             │
-│  6. TEST — second model generates + runs tests  │
-│     ├─ Pass → continue                          │
-│     └─ Fail → human intervention                │
-│  7. DIFF — git-style review of all changes      │
-│  8. APPROVE or REJECT — human decides           │
-│  9. MERGE to real project only on approval      │
-│ 10. AUDIT — log everything                      │
+│  4. PLANNER breaks task into steps              │
+│     ├─ Sends step to agent inside sandbox       │
+│     ├─ Reads agent output                       │
+│     ├─ Triggers tests when ready                │
+│     ├─ Feeds failures back to agent             │
+│     └─ Loops until task complete                │
+│  5. DIFF — file-level review of all changes     │
+│  6. APPROVE or REJECT — human decides           │
+│  7. MERGE to real project only on approval      │
 └─────────────────────────────────────────────────┘
 ```
 
-The agent never sees your real API keys. Tests run in the sandbox. Nothing touches your filesystem without your explicit approval.
+The agent runs entirely inside Docker. It never sees your real API keys. Nothing touches your filesystem without your explicit approval.
 
 ---
 
-## Architecture: Fortress + Cockpit
+## Architecture: Three Roles
 
-FTL has two layers:
+FTL separates concerns into three independently configurable roles:
 
-### Fortress (The Sandbox)
-The security infrastructure. Runs agents in isolated Docker containers (Virtualization.framework VMs on the roadmap). Handles shadow credential injection, network proxy for key swapping, snapshot/restore, and audit logging. **This is what the MVP delivers.**
+```json
+{
+  "planner_model": "bedrock/us.amazon.nova-lite-v1:0",
+  "agent": "claude-code",
+  "tester": "bedrock/us.amazon.nova-lite-v1:0"
+}
+```
 
-### Cockpit (The Shell)
-The natural language interface. An interactive shell where you issue commands, review diffs, ask questions about changes, manage your file-system and control your computer - all with natural language. Future versions will include intent parsing via LLM planners (Nova Lite, Claude, GPT, Ollama) to break complex tasks into executable steps.
+### Planner (Nova Lite / any LLM)
+The orchestration brain. Runs on the **host** via LiteLLM API calls. Breaks tasks into steps, drives the agent, triggers tests, loops on failures. Constrained to a fixed JSON action set — it can only emit `agent`, `test`, `done`, or `clarify` actions. Cannot escape this loop.
+
+### Agent (Claude Code / Kiro)
+The coding hands. Runs **inside the Docker sandbox** with `--dangerously-skip-permissions` (safe because Docker IS the permission boundary). Maintains conversation continuity via `-c` flag across steps. Never sees real credentials or the host filesystem.
+
+### Tester (DeepSeek R1 / any LLM or agent)
+The adversarial reviewer. Generates tests that try to break the agent's code. Must be a different model/agent than the coding agent. Test results feed back to the planner, which tells the agent to fix failures.
 
 ---
 
@@ -63,15 +73,41 @@ pip install -e .
 # Build the sandbox image
 docker build -t ftl-sandbox:latest .
 
+# Set credentials
+export ANTHROPIC_API_KEY=sk-ant-...          # For Claude Code (agent)
+export AWS_BEARER_TOKEN_BEDROCK=ABSK...      # For Bedrock (planner/tester)
+
 # Initialize in your project
 cd your-project
 ftl init
 
-# Run a task
+# Run a task (one-shot)
 ftl code "create login component"
 
 # Or enter interactive mode
 ftl
+```
+
+### Interactive Shell
+
+```
+ftl> build a login page with email and password
+  Planner → Agent → Tests → Done
+
+ftl[active]> add form validation
+  Planner → Agent → Tests → Done
+
+ftl[active]> diff
+  Shows all changes since snapshot
+
+ftl[active]> test
+  Manually trigger tests
+
+ftl[active]> merge
+  Interactive review → approve/reject
+
+ftl[active]> reject
+  Discard all changes
 ```
 
 ### Configuration
@@ -80,21 +116,23 @@ ftl
 
 ```json
 {
-  "planner_model": "bedrock/amazon.nova-lite-v1:0",
+  "planner_model": "bedrock/us.amazon.nova-lite-v1:0",
   "agent": "claude-code",
-  "tester": "bedrock/deepseek-r1"
+  "tester": "bedrock/us.amazon.nova-lite-v1:0",
+  "planner_max_steps": 20
 }
 ```
-
-- **agent** — the coding agent that runs inside the sandbox (`claude-code`, `kiro`)
-- **tester** — a different agent or model that generates adversarial tests (must differ from agent)
-- **planner_model** — LLM for intent parsing and diff Q&A (via LiteLLM — any provider)
 
 All models are routed through [LiteLLM](https://github.com/BerriAI/litellm), so you can swap to any provider:
 
 ```json
-{"agent": "kiro", "tester": "ollama/deepseek-r1", "planner_model": "gpt-4o"}
+{"planner_model": "ollama/llama3", "agent": "kiro", "tester": "anthropic/claude-haiku-4-5-20251001"}
 ```
+
+Optional config fields:
+- **shadow_env** — extra env var names to shadow (beyond `.env`)
+- **agent_env** — extra env vars to forward for agent auth
+- **planner_max_steps** — safety limit on planner iterations (default: 20)
 
 ---
 
@@ -123,7 +161,21 @@ STRIPE_SECRET_KEY=ftl_shadow_stripe_secret_key_7f8a2b3c
 SUPABASE_KEY=ftl_shadow_supabase_key_9d4e1f6a
 ```
 
-The agent writes code using these shadow keys. When the code makes an outbound API call, FTL's network proxy intercepts the request, swaps the shadow key for the real key at the wire level, and forwards the request. The agent never sees the real value.
+The agent writes code using these shadow keys. The `.env` file never enters the sandbox — it's stripped during workspace copy via shared ignore rules. Real credentials only exist on the host.
+
+---
+
+## Sandbox Isolation
+
+The agent runs inside a Docker container with:
+
+- **Resource limits**: 2GB RAM, 2 CPUs
+- **Non-root user**: `ftl` user (Claude Code requires non-root for `--dangerously-skip-permissions`)
+- **Filtered workspace**: `.env`, `.git`, `node_modules`, `__pycache__` are stripped before mounting
+- **Shadow credentials**: Injected via env vars, not files
+- **Agent auth**: `ANTHROPIC_API_KEY` forwarded separately from project secrets
+- **Warm pool**: Container boots once, goes to standby between tasks, reuses on next invocation
+- **Diff-driven merge**: Only changed files (create/modify/delete) are merged back — not a blind copy
 
 ---
 
@@ -133,29 +185,36 @@ The agent writes code using these shadow keys. When the code makes an outbound A
 
 - [x] CLI framework (`ftl init`, `ftl code "task"`, interactive shell)
 - [x] Project-level config (`.ftlconfig` with git-style directory walking)
-- [x] Shadow credential generation (`.env` scanning + configurable extras)
+- [x] Shadow credential generation (`.env` scanning + configurable extras via python-dotenv)
 - [x] Docker sandbox with warm pool (boot once, reuse across tasks)
+- [x] Non-root sandbox user (required for Claude Code permissions)
 - [x] Pluggable sandbox interface (Docker MVP, Virtualization.framework future)
-- [x] Agent adapters (Claude Code, Kiro — pluggable, ~10 lines per agent)
+- [x] Agent adapters running inside sandbox (Claude Code, Kiro — via `sandbox.exec()`)
+- [x] Agent conversation continuity (`-c` flag for follow-up messages)
+- [x] Agent auth forwarding (`ANTHROPIC_API_KEY` into container, separate from shadow creds)
+- [x] Filtered workspace copy (shared ignore rules — no `.env`, `.git`, `node_modules`)
 - [x] Filesystem snapshot/restore (local storage, `.ftlignore` support)
 - [x] Pluggable snapshot interface (local MVP, S3 future)
-- [x] Git-style diff display (Rich terminal UI, green/red, file summaries)
+- [x] File-level diff display (Rich terminal UI, green/red, binary detection)
 - [x] Interactive diff review with LLM Q&A (ask questions about changes)
+- [x] Diff-driven merge (surgical — only creates/modifies/deletes changed files)
+- [x] Planner loop (constrained JSON actions, drives agent + tester, max step safety)
+- [x] Session-aware shell (follow-up instructions, test/diff/merge/reject commands)
 - [x] Configurable test verification (any agent or model as tester)
-- [x] Orchestrator wiring (snapshot → sandbox → agent → test → diff → approve → merge)
-- [x] Dockerfile (Debian slim, Node.js 22, Python 3.11, TypeScript)
+- [x] Bedrock integration (Nova Lite via inference profiles)
+- [x] Claude Code installed in sandbox image
+- [x] Dockerfile (Debian slim, Node.js 22, Python 3.11, TypeScript, Claude Code)
+- [x] End-to-end tested: planner → agent → diff → review flow working
 
 ### To Do
 
 - [ ] Network proxy layer (intercept outbound traffic, swap shadow keys for real keys)
-- [ ] Agent → test → retry loop (human intervenes only on test failure)
+- [ ] Install pytest/jest in sandbox image for tester
 - [ ] Audit logging (local SQLite default, DynamoDB optional)
 - [ ] S3 snapshot adapter
 - [ ] DynamoDB audit adapter
-- [ ] Bedrock integration for Nova Lite / DeepSeek R1
 - [ ] Virtualization.framework sandbox backend (Alpine Linux, sub-second boot)
-- [ ] Cockpit: LLM planner for intent parsing and task decomposition
-- [ ] Claude Code + Kiro pre-installed in sandbox image
+- [ ] Kiro CLI installed in sandbox image
 - [ ] `ftl logs` command for audit trail
 - [ ] Enterprise features (team audit trails, custom credential patterns)
 
@@ -166,25 +225,26 @@ The agent writes code using these shadow keys. When the code makes an outbound A
 ```
 FTL/
 ├── pyproject.toml              # Project config, dependencies, CLI entry point
-├── Dockerfile                  # Sandbox image (Debian slim + Node + Python)
+├── Dockerfile                  # Sandbox image (Debian slim + Node + Python + Claude Code)
 ├── .gitignore
 ├── ftl/
-│   ├── cli.py                  # CLI: ftl init, ftl code, interactive shell
+│   ├── cli.py                  # CLI: ftl init, ftl code, interactive shell with sessions
 │   ├── config.py               # .ftlconfig reader (git-style directory walk)
-│   ├── credentials.py          # Shadow credential generation + mapping
-│   ├── orchestrator.py         # Full execution flow
+│   ├── credentials.py          # Shadow credential generation + mapping (python-dotenv)
+│   ├── orchestrator.py         # Session management, workspace copy, merge
+│   ├── planner.py              # Planner loop (constrained JSON actions, drives agent)
 │   ├── diff.py                 # Diff computation, display, interactive review
+│   ├── ignore.py               # Shared ignore rules (ALWAYS_IGNORE + .ftlignore)
 │   ├── agents/
-│   │   ├── base.py             # Abstract agent interface
-│   │   ├── claude_code.py      # Claude Code adapter
+│   │   ├── base.py             # Abstract agent interface (run + continue_run)
+│   │   ├── claude_code.py      # Claude Code adapter (sandbox.exec, -c continuation)
 │   │   └── kiro.py             # Kiro CLI adapter
 │   ├── sandbox/
 │   │   ├── base.py             # Abstract sandbox interface
-│   │   └── docker.py           # Docker implementation with warm pool
+│   │   └── docker.py           # Docker implementation with warm pool + agent auth
 │   └── snapshot/
 │       ├── base.py             # Abstract snapshot interface
 │       └── local.py            # Local filesystem implementation
-└── tests/
 ```
 
 ---

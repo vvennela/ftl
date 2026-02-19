@@ -32,11 +32,12 @@ class DockerSandbox(Sandbox):
         self._credentials = {}
         atexit.register(self._cleanup_on_exit)
 
-    def boot(self, project_path, credentials=None):
+    def boot(self, project_path, credentials=None, agent_env=None):
         """Boot or reuse a warm container with project mounted."""
         _check_image_exists()
         project_path = str(Path(project_path).resolve())
         self._credentials = credentials or {}
+        self._agent_env = agent_env or {}
 
         with DockerSandbox._lock:
             if DockerSandbox._standby_id and self._is_alive(DockerSandbox._standby_id):
@@ -46,9 +47,12 @@ class DockerSandbox(Sandbox):
             else:
                 self.container_id = self._create(project_path)
 
-        # Write credentials to env file inside container so they persist
-        if self._credentials:
-            env_lines = "\n".join(f"export {k}={v}" for k, v in self._credentials.items())
+        # Write all env vars to file inside container:
+        # - shadow credentials (project secrets the agent sees as fake keys)
+        # - agent auth (ANTHROPIC_API_KEY, etc. so the agent can call its own API)
+        all_env = {**self._credentials, **self._agent_env}
+        if all_env:
+            env_lines = "\n".join(f"export {k}='{v}'" for k, v in all_env.items())
             subprocess.run(
                 ["docker", "exec", self.container_id, "sh", "-c",
                  f"cat > {ENV_FILE} << 'FTLEOF'\n{env_lines}\nFTLEOF"],
@@ -59,8 +63,8 @@ class DockerSandbox(Sandbox):
 
     def exec(self, command, timeout=DEFAULT_TIMEOUT):
         """Run a command inside the container with credentials sourced."""
-        # Source env file before every command so credentials persist
-        if self._credentials:
+        # Source env file before every command so all env vars persist
+        if self._credentials or self._agent_env:
             command = f". {ENV_FILE} && {command}"
 
         try:

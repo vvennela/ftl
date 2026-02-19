@@ -1,13 +1,19 @@
-import subprocess
+import shlex
 from ftl.agents.base import Agent
 
 
 class ClaudeCodeAgent(Agent):
 
-    def run(self, task, workspace):
-        result = subprocess.run(
-            ["claude", "-p", task, "--directory", workspace],
-            capture_output=True,
-            text=True,
+    def run(self, task, workspace, sandbox):
+        escaped = shlex.quote(task)
+        return sandbox.exec(
+            f'cd {workspace} && claude -p {escaped} --dangerously-skip-permissions',
+            timeout=3600,
         )
-        return result.returncode, result.stdout, result.stderr
+
+    def continue_run(self, task, workspace, sandbox):
+        escaped = shlex.quote(task)
+        return sandbox.exec(
+            f'cd {workspace} && claude -p {escaped} -c --dangerously-skip-permissions',
+            timeout=3600,
+        )

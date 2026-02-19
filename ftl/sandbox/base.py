@@ -8,8 +8,14 @@ class Sandbox(ABC):
     """
 
     @abstractmethod
-    def boot(self, project_path, credentials):
-        """Boot the sandbox with project mounted and shadow creds injected."""
+    def boot(self, project_path, credentials=None, agent_env=None):
+        """Boot the sandbox with project mounted, shadow creds, and agent auth injected.
+
+        Args:
+            project_path: Path to the workspace to mount.
+            credentials: Shadow credential env vars for the user's project secrets.
+            agent_env: Auth env vars for the agent itself (e.g., ANTHROPIC_API_KEY).
+        """
         pass
 
     @abstractmethod
