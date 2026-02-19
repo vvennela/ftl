@@ -15,8 +15,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm cache clean --force
 
-# TypeScript + React tooling + Claude Code
-RUN npm install -g typescript ts-node create-react-app @anthropic-ai/claude-code \
+# TypeScript + React tooling + Claude Code + Jest
+RUN npm install -g typescript ts-node create-react-app @anthropic-ai/claude-code jest \
     && npm cache clean --force
 
 # Python 3.11 (ships with bookworm) + pip + venv
@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
+
+# pytest (--break-system-packages because no venv in container)
+RUN pip3 install --break-system-packages pytest
 
 # Strip unnecessary files
 RUN find /usr -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; \

@@ -10,6 +10,7 @@ from ftl.ignore import get_ignore_set, should_ignore
 from ftl.snapshot import create_snapshot_store
 from ftl.sandbox import create_sandbox
 from ftl.diff import display_diff, review_diff
+from ftl.lint import lint_diffs, display_violations
 from ftl.planner import PlannerLoop
 
 
@@ -87,6 +88,7 @@ class Session:
         self.snapshot_id = None
         self.snapshot_path = None
         self.diffs = None
+        self.shadow_env = None
 
     def start(self, task):
         """Start a new coding session with the given task."""
@@ -109,7 +111,8 @@ class Session:
 
         # 3. Shadow credentials
         extra_vars = self.config.get("shadow_env", [])
-        shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
+        self.shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
+        shadow_env = self.shadow_env
         if shadow_env:
             self.console.print(f"  Shadow credentials: {len(shadow_env)} keys injected")
 
@@ -140,7 +143,7 @@ class Session:
             return
 
         self.planner.inject_message(message)
-        self.diffs = self.planner.run(message)
+        self.diffs = self.planner.run(message)  # run() skips re-adding since messages already set
 
     def show_diff(self):
         """Display the current diff."""
@@ -167,6 +170,15 @@ class Session:
         if not self.diffs:
             self.console.print("[dim]No changes to merge.[/dim]")
             return
+
+        # Run credential lint before review
+        violations = lint_diffs(self.diffs, self.shadow_env)
+        display_violations(violations)
+        if violations:
+            self.console.print(
+                "[bold yellow]Credential violations detected. "
+                "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
+            )
 
         planner_model = self.config.get("planner_model", "bedrock/amazon.nova-lite-v1:0")
         approved = review_diff(self.diffs, planner_model)
@@ -199,6 +211,7 @@ class Session:
         self.planner = None
         self.workspace = None
         self.diffs = None
+        self.shadow_env = None
 
     @property
     def is_active(self):

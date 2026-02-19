@@ -58,25 +58,28 @@ def _run_tests_with_model(diffs, model, sandbox):
 
     diff_text = diff_to_text(diffs)
 
-    response = litellm.completion(
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an adversarial test engineer. Given code changes, generate "
-                    "a test script that tries to break the code. Focus on edge cases, "
-                    "null inputs, boundary conditions, and unexpected usage. Your goal is "
-                    "to find bugs. Output ONLY the test script, no explanation. Use the "
-                    "appropriate test framework (pytest for Python, jest/vitest for JS/TS)."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Write tests to find bugs in these changes:\n\n{diff_text}",
-            },
-        ],
-    )
+    try:
+        response = litellm.completion(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an adversarial test engineer. Given code changes, generate "
+                        "a test script that tries to break the code. Focus on edge cases, "
+                        "null inputs, boundary conditions, and unexpected usage. Your goal is "
+                        "to find bugs. Output ONLY the test script, no explanation. Use the "
+                        "appropriate test framework (pytest for Python, jest/vitest for JS/TS)."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Write tests to find bugs in these changes:\n\n{diff_text}",
+                },
+            ],
+        )
+    except Exception as e:
+        return 1, "", f"Tester API error: {e}"
 
     test_code = response.choices[0].message.content
 
@@ -155,18 +158,24 @@ class PlannerLoop:
         """Run the planner loop for a task. Returns diffs when done."""
         self.console.print(f"[bold]Planner decomposing task...[/bold]")
 
-        # Initial message to planner
-        self.messages = [
-            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-            {"role": "user", "content": f"User task: {task}"},
-        ]
+        # Only set initial messages if this is a fresh run (not a follow-up)
+        if not self.messages:
+            self.messages = [
+                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+                {"role": "user", "content": f"User task: {task}"},
+            ]
 
         for step in range(self.max_steps):
             # Ask planner for next action
-            response = litellm.completion(
-                model=self.planner_model,
-                messages=self.messages,
-            )
+            try:
+                response = litellm.completion(
+                    model=self.planner_model,
+                    messages=self.messages,
+                )
+            except Exception as e:
+                self.console.print(f"[red]  Planner API error: {e}[/red]")
+                self.console.print("[yellow]  Stopping planner loop. Use 'diff' to see current state.[/yellow]")
+                break
 
             raw = response.choices[0].message.content
             self.messages.append({"role": "assistant", "content": raw})

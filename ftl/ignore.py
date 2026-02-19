@@ -11,6 +11,12 @@ ALWAYS_IGNORE = {
     "build",
     ".next",
     ".ftl",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".coverage",
+    "coverage",
+    "htmlcov",
 }
 
 

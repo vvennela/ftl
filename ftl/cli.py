@@ -1,6 +1,7 @@
 import click
 from rich.console import Console
 from ftl.config import load_config, init_config, find_config
+from ftl.credentials import load_ftl_credentials, save_ftl_credential
 from ftl.orchestrator import run_task, Session
 
 
@@ -9,6 +10,7 @@ from ftl.orchestrator import run_task, Session
 @click.pass_context
 def main(ctx):
     """FTL: Zero-trust control plane for AI development."""
+    load_ftl_credentials()
     if ctx.invoked_subcommand is None:
         shell()
 
@@ -21,6 +23,20 @@ def init():
         return
     config_path = init_config()
     click.echo(f"Created {config_path}")
+
+
+@main.command()
+@click.argument("key")
+@click.argument("value")
+def auth(key, value):
+    """Save an FTL credential. Stored in ~/.ftl/credentials.
+
+    Examples:
+        ftl auth ANTHROPIC_API_KEY sk-ant-...
+        ftl auth AWS_BEARER_TOKEN_BEDROCK ABSK...
+    """
+    save_ftl_credential(key, value)
+    click.echo(f"Saved {key} to ~/.ftl/credentials")
 
 
 @main.command()

@@ -25,6 +25,17 @@ def _is_binary(file_path):
         return False
 
 
+DIFF_IGNORE = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
+
+
+def _should_ignore_in_diff(rel_path):
+    """Filter out build artifacts from diffs."""
+    for part in rel_path.parts:
+        if part in DIFF_IGNORE:
+            return True
+    return False
+
+
 def compute_diff(snapshot_path, workspace_path):
     """Compare snapshot against workspace. Returns list of file diffs."""
     snapshot_path = Path(snapshot_path)
@@ -33,12 +44,12 @@ def compute_diff(snapshot_path, workspace_path):
     snapshot_files = {
         f.relative_to(snapshot_path)
         for f in snapshot_path.rglob("*")
-        if f.is_file() and f.name != ".ftl_meta"
+        if f.is_file() and f.name != ".ftl_meta" and not _should_ignore_in_diff(f.relative_to(snapshot_path))
     }
     workspace_files = {
         f.relative_to(workspace_path)
         for f in workspace_path.rglob("*")
-        if f.is_file()
+        if f.is_file() and not _should_ignore_in_diff(f.relative_to(workspace_path))
     }
 
     diffs = []
