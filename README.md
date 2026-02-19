@@ -205,11 +205,15 @@ The agent runs inside a Docker container with:
 - [x] Claude Code installed in sandbox image
 - [x] Dockerfile (Debian slim, Node.js 22, Python 3.11, TypeScript, Claude Code)
 - [x] End-to-end tested: planner → agent → diff → review flow working
+- [x] Install pytest/jest in sandbox image for tester
+- [x] Credential lint (static analysis catches hardcoded shadow values, direct env access, known key patterns)
+- [x] Persistent credential storage (`~/.ftl/credentials`, `ftl auth` command, mode 600)
+- [x] LiteLLM error handling in planner loop (graceful stop on API failures)
+- [x] Build artifact filtering (`.pytest_cache`, `__pycache__` excluded from diffs)
 
 ### To Do
 
 - [ ] Network proxy layer (intercept outbound traffic, swap shadow keys for real keys)
-- [ ] Install pytest/jest in sandbox image for tester
 - [ ] Audit logging (local SQLite default, DynamoDB optional)
 - [ ] S3 snapshot adapter
 - [ ] DynamoDB audit adapter
@@ -230,10 +234,11 @@ FTL/
 ├── ftl/
 │   ├── cli.py                  # CLI: ftl init, ftl code, interactive shell with sessions
 │   ├── config.py               # .ftlconfig reader (git-style directory walk)
-│   ├── credentials.py          # Shadow credential generation + mapping (python-dotenv)
+│   ├── credentials.py          # Shadow creds, ~/.ftl/credentials store, ftl auth
 │   ├── orchestrator.py         # Session management, workspace copy, merge
 │   ├── planner.py              # Planner loop (constrained JSON actions, drives agent)
 │   ├── diff.py                 # Diff computation, display, interactive review
+│   ├── lint.py                 # Static analysis (credential leak detection in diffs)
 │   ├── ignore.py               # Shared ignore rules (ALWAYS_IGNORE + .ftlignore)
 │   ├── agents/
 │   │   ├── base.py             # Abstract agent interface (run + continue_run)
