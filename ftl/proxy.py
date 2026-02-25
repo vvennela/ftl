@@ -361,30 +361,49 @@ class CredentialSwapProxy:
             self._server.shutdown()
             self._server = None
 
+    # Domains the agent uses for its own API calls — nothing to swap here,
+    # keep them out of the proxy so Node.js SSL verification is never an issue.
+    _AGENT_DOMAINS = (
+        "api.anthropic.com,"           # Claude Code
+        "*.amazonaws.com,"             # Kiro / Bedrock
+        "amazonaws.com,"
+        "api.openai.com,"              # in case agent uses OpenAI directly
+        "oauth2.googleapis.com,"       # Google auth
+        "accounts.google.com"
+    )
+
+    _NO_PROXY_BASE = "localhost,127.0.0.1,::1"
+
     def install_ca_in_container(self, sandbox):
-        """Install the proxy's CA certificate into the container's trust store.
+        """Install the proxy CA into the container's trust store.
+
+        - System store (Python, curl): /usr/local/share/ca-certificates/ + update-ca-certificates
+        - Node.js store: /tmp/ftl-proxy-ca.crt, referenced via NODE_EXTRA_CA_CERTS
 
         Must be called after sandbox.boot() and before the agent runs.
-        Requires root exec capability on the sandbox.
         """
         import base64
-        # Base64-encode the cert to avoid shell quoting/newline issues
         cert_b64 = base64.b64encode(self.ca_cert_pem).decode()
         cmds = (
+            # System CA store (curl, Python requests, etc.)
             f"echo '{cert_b64}' | base64 -d"
             f" > /usr/local/share/ca-certificates/ftl-proxy.crt"
-            f" && update-ca-certificates"
+            f" && update-ca-certificates -q"
+            # Node.js CA file (Claude Code, any other Node apps)
+            f" && echo '{cert_b64}' | base64 -d > /tmp/ftl-proxy-ca.crt"
         )
         sandbox.exec_as_root(cmds)
 
     def env_vars(self):
         """Return env vars to inject into the container for proxy routing."""
+        no_proxy = f"{self._NO_PROXY_BASE},{self._AGENT_DOMAINS}"
         return {
             "HTTP_PROXY": self.url,
             "HTTPS_PROXY": self.url,
             "http_proxy": self.url,
             "https_proxy": self.url,
-            # Don't proxy localhost or the agent's own API calls
-            "NO_PROXY": "localhost,127.0.0.1,::1",
-            "no_proxy": "localhost,127.0.0.1,::1",
+            "NO_PROXY": no_proxy,
+            "no_proxy": no_proxy,
+            # Node.js doesn't use the system CA store — point it at our cert file
+            "NODE_EXTRA_CA_CERTS": "/tmp/ftl-proxy-ca.crt",
         }

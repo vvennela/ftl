@@ -80,9 +80,9 @@ pip install -e .
 # Build the sandbox image (one time)
 docker build -t ftl-sandbox .
 
-# Set credentials
-export ANTHROPIC_API_KEY=sk-ant-...         # for Claude Code (agent)
-export AWS_BEARER_TOKEN_BEDROCK=ABSK...     # for Bedrock (tester)
+# Store credentials (persists across sessions — no export needed again)
+ftl auth ANTHROPIC_API_KEY sk-ant-...
+ftl auth AWS_BEARER_TOKEN_BEDROCK ABSK...
 
 # Initialize in your project
 cd your-project
@@ -96,6 +96,59 @@ ftl
 ```
 
 Use single quotes if the task contains `$`.
+
+### Credential storage
+
+`ftl auth` writes to `~/.ftl/credentials` (mode 600) and loads automatically on every `ftl` invocation — no need to `export` on each shell session.
+
+Alternatively, use environment variables directly:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export AWS_BEARER_TOKEN_BEDROCK=ABSK...
+```
+
+Or keep them in a `.env` file at your project root — FTL reads it for shadow credential generation, and `python-dotenv` parsing is used so all standard `.env` syntax works.
+
+### AWS setup (S3 snapshots + remote execution)
+
+FTL supports AWS-native operation: snapshots stored in S3 for durability and cross-machine access, with a path toward running sandboxes in Firecracker microVMs or Lambda instead of local Docker.
+
+```bash
+pip install -e ".[aws]"
+```
+
+Configure AWS credentials the standard way — any of these work:
+
+```bash
+# Option 1: AWS CLI profile (recommended)
+aws configure
+
+# Option 2: environment variables
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=us-east-1
+
+# Option 3: ftl auth (persists like other credentials)
+ftl auth AWS_ACCESS_KEY_ID ...
+ftl auth AWS_SECRET_ACCESS_KEY ...
+ftl auth AWS_DEFAULT_REGION us-east-1
+```
+
+Add S3 snapshot storage to `.ftlconfig`:
+
+```json
+{
+  "agent": "claude-code",
+  "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
+  "snapshot_backend": "s3",
+  "s3_bucket": "my-ftl-snapshots"
+}
+```
+
+Snapshots are stored as gzipped tarballs at `s3://<bucket>/snapshots/<project-hash>/<id>.tar.gz`. The local cache at `~/.ftl/snapshots/` is kept so the Docker container can mount snapshots without a per-task S3 download. S3 is the authoritative store — snapshots survive machine wipes and are accessible from any machine with bucket access.
+
+**Remote execution (roadmap):** The sandbox interface is backend-agnostic. The Docker backend is the current implementation; a Firecracker/Lambda backend is next — same `.ftlconfig`, sandboxes run in AWS instead of locally. Tester already runs via Bedrock. The full loop (snapshot to S3 → boot Firecracker VM → agent runs → diff → approve → merge) will work without a local Docker daemon.
 
 ---
 
@@ -139,22 +192,9 @@ All models route through [LiteLLM](https://github.com/BerriAI/litellm):
 Optional fields:
 - **`shadow_env`** — extra env var names to shadow beyond `.env`
 - **`agent_env`** — extra env vars to forward for agent auth
-- **`snapshot_backend`** — `"local"` (default) or `"s3"`
+- **`snapshot_backend`** — `"local"` (default) or `"s3"` (see AWS setup above)
 - **`s3_bucket`** — required when `snapshot_backend` is `"s3"`
-- **`setup`** — shell command to run after workspace is populated on a **fresh container only**
-
-S3 snapshot config:
-
-```json
-{
-  "agent": "claude-code",
-  "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
-  "snapshot_backend": "s3",
-  "s3_bucket": "my-ftl-snapshots"
-}
-```
-
-Install the S3 extra: `pip install -e ".[aws]"`
+- **`setup`** — shell command to run on a **fresh container only**, before the agent starts
 
 ---
 
@@ -256,6 +296,25 @@ This runs once when a fresh container is created — not on warm reuse, where th
 
 ---
 
+## Tracing
+
+FTL prints elapsed time at each stage (snapshot, boot, agent, tests) automatically.
+
+For full LLM observability (tester calls, diff review, Q&A), enable Langfuse:
+
+```bash
+pip install -e ".[tracing]"
+
+ftl auth LANGFUSE_PUBLIC_KEY pk-lf-...
+ftl auth LANGFUSE_SECRET_KEY sk-lf-...
+# optional, defaults to cloud.langfuse.com:
+ftl auth LANGFUSE_HOST https://cloud.langfuse.com
+```
+
+Every `litellm.completion()` call (tester model, diff review, Q&A) is traced automatically. Claude Code's internal calls are a subprocess and cannot be traced this way — the stage timer covers that gap.
+
+---
+
 ## CLI Reference
 
 ```bash
@@ -322,7 +381,7 @@ FTL/
 **Next (AWS competition demo):**
 - Tool dispatch layer — planner routes between coding, email, Slack, GitHub
 - Contact resolution from `~/.ftl/world.yaml` (top email/Slack/iMessage contacts)
-- AWS-native execution: S3 snapshot backend, Firecracker/Lambda containers
+- Remote execution — Firecracker/Lambda sandbox backend; S3 snapshots already done
 
 **Later:**
 - Network proxy — intercept outbound traffic, swap shadow keys for real keys at the boundary

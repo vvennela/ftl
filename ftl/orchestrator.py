@@ -16,6 +16,9 @@ from ftl.agents import get_agent
 from ftl.diff import display_diff, review_diff
 from ftl.lint import lint_diffs, display_violations
 from ftl.planner import generate_tests_from_task, run_test_code, run_verification
+from ftl.tracing import setup_langfuse, StageTimer, AgentHeartbeat
+
+setup_langfuse()
 
 
 def _try_start_proxy(swap_table):
@@ -108,12 +111,15 @@ class Session:
 
     def start(self, task):
         """Start a new coding session: snapshot → sandbox → agent ∥ test-gen → run tests → diff."""
+        timer = StageTimer(self.console)
+
         # 1. Snapshot
         self.console.print("[bold]Snapshotting project...[/bold]")
         snapshot_store = create_snapshot_store(self.config)
         self.snapshot_id = snapshot_store.create(self.project_path)
         self.snapshot_path = str(Path.home() / ".ftl" / "snapshots" / self.snapshot_id)
         self.console.print(f"  Snapshot: {self.snapshot_id}")
+        timer.mark("snapshot")
 
         # 2. Shadow credentials + proxy
         extra_vars = self.config.get("shadow_env", [])
@@ -154,9 +160,13 @@ class Session:
             self._proxy.install_ca_in_container(self.sandbox)
 
         if self.sandbox.fresh and self.config.get("setup"):
-            self.console.print(f"  Setup: ran on fresh container")
+            self.console.print("  Setup: ran on fresh container")
 
-        self.console.print("  Sandbox ready")
+        self.console.print(
+            f"  Sandbox ready"
+            f"  [dim]({'fresh' if self.sandbox.fresh else 'warm'} container)[/dim]"
+        )
+        timer.mark("boot")
 
         # 5. Run agent + generate tests in parallel.
         #    Tests generate while the agent codes; when the agent finishes the
@@ -166,16 +176,23 @@ class Session:
             f"[dim]  (generating tests in parallel via {self.tester})[/dim]"
         )
 
+        heartbeat = AgentHeartbeat(self.console)
+
         def _run_agent():
+            heartbeat.start()
             def _stream(line):
+                heartbeat.stop()
                 self.console.print(line, end="", highlight=False)
-            return self.agent.run(task, "/workspace", self.sandbox, callback=_stream)
+            result = self.agent.run(task, "/workspace", self.sandbox, callback=_stream)
+            heartbeat.stop()
+            return result
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             agent_future = executor.submit(_run_agent)
             test_future = executor.submit(generate_tests_from_task, task, self.tester)
 
         self.agent_calls = 1
+        timer.mark("agent")
 
         # 6. Run tests — generation was parallel so test_future is usually
         #    already done by the time the agent finishes.
@@ -183,6 +200,7 @@ class Session:
         if test_code:
             self.console.print("[bold]Running tests...[/bold]")
             run_test_code(test_code, self.sandbox, self.console)
+            timer.mark("tests")
 
         self.task = task
 

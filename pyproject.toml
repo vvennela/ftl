@@ -17,6 +17,9 @@ aws = [
 proxy = [
     "cryptography>=42.0",
 ]
+tracing = [
+    "langfuse>=2.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",

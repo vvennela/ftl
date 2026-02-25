@@ -56,20 +56,25 @@ def run_test_code(test_code, sandbox, console):
     """Write test code into the sandbox and run it. Returns (exit_code, output)."""
     test_code = _strip_fence(test_code)
 
-    sandbox.exec(f"cat > /workspace/_ftl_test.py << 'FTLEOF'\n{test_code}\nFTLEOF")
-    exit_code, stdout, stderr = sandbox.exec(
-        "cd /workspace && python -m pytest _ftl_test.py -v 2>&1 || node _ftl_test.py 2>&1"
-    )
+    is_js = test_code.strip().startswith(("import ", "const ", "describe(", "test(", "it(", "require("))
+    test_file = "/workspace/_ftl_test." + ("js" if is_js else "py")
+
+    sandbox.exec(f"cat > {test_file} << 'FTLEOF'\n{test_code}\nFTLEOF")
+
+    if is_js:
+        run_cmd = f"cd /workspace && node {test_file} 2>&1"
+    else:
+        run_cmd = f"cd /workspace && python -m pytest {test_file} -v 2>&1"
+
+    exit_code, stdout, stderr = sandbox.exec(run_cmd)
 
     # If tests failed due to missing modules, install them and retry once.
     missing = _extract_missing_modules(stdout + stderr)
     if missing and exit_code != 0:
         sandbox.exec(f"pip install {' '.join(missing)} -q")
-        exit_code, stdout, stderr = sandbox.exec(
-            "cd /workspace && python -m pytest _ftl_test.py -v 2>&1 || node _ftl_test.py 2>&1"
-        )
+        exit_code, stdout, stderr = sandbox.exec(run_cmd)
 
-    sandbox.exec("rm -f /workspace/_ftl_test.py")
+    sandbox.exec(f"rm -f {test_file}")
 
     if exit_code == 0:
         console.print("[green]  Tests passed.[/green]")

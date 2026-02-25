@@ -22,7 +22,7 @@ WORK = Path('/workspace')
 IGNORE = {{'__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
            'node_modules', 'site-packages', 'venv', '.venv'}}
 SUFFIXES = ('.dist-info', '.egg-info', '.egg-link')
-SKIP_FILES = {{'_ftl_test.py', '.ftl_meta'}}
+SKIP_FILES = {{'_ftl_test.py', '_ftl_test.js', '.ftl_meta'}}
 
 def skip(rel):
     p = Path(rel)
