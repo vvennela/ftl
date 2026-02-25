@@ -70,9 +70,9 @@ def snapshots(ctx, show_all):
     from ftl.snapshot import create_snapshot_store
 
     console = Console()
-    store = create_snapshot_store()
-
     config_path = find_config()
+    store = create_snapshot_store(load_config() if config_path else None)
+
     if not show_all and not config_path:
         console.print("[red]No .ftlconfig found. Use --all or run 'ftl init'.[/red]")
         raise SystemExit(1)
@@ -116,13 +116,13 @@ def snapshots_clean(last_n, delete_all, project_only, yes):
     from ftl.snapshot import create_snapshot_store
 
     console = Console()
-    store = create_snapshot_store()
 
     if not last_n and not delete_all:
         console.print("[red]Specify --last N or --all.[/red]")
         raise SystemExit(1)
 
     config_path = find_config()
+    store = create_snapshot_store(load_config() if config_path else None)
     project_filter = str(config_path.parent) if project_only and config_path else None
     all_snaps = _snapshots_sorted(store, project_filter)
 
@@ -233,7 +233,7 @@ def shell():
     console.print("[dim]Type a task to start. Commands: test, diff, merge, reject, list, restore <id>, exit[/dim]\n")
 
     from ftl.snapshot import create_snapshot_store
-    snapshot_store = create_snapshot_store()
+    snapshot_store = create_snapshot_store(config)
     session = None
 
     while True:

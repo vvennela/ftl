@@ -106,12 +106,14 @@ class DockerSandbox(Sandbox):
 
     def __init__(self):
         self.container_id = None
+        self.fresh = False  # True if boot() created a new container this session
         self._credentials = {}
         self._agent_env = {}
         self._project_path = None
         atexit.register(self._cleanup_on_exit)
 
-    def boot(self, snapshot_path, credentials=None, agent_env=None, project_path=None):
+    def boot(self, snapshot_path, credentials=None, agent_env=None, project_path=None,
+             setup_cmd=None):
         """Boot or reuse a persistent container for this project.
 
         Container lookup order:
@@ -120,6 +122,7 @@ class DockerSandbox(Sandbox):
           3. Create fresh
 
         Workspace is always reset from the snapshot before handing off to the agent.
+        setup_cmd runs only on a fresh container (not on warm reuse) after env vars are written.
         """
         _check_image_exists()
         snapshot_path = Path(snapshot_path).resolve()
@@ -146,6 +149,7 @@ class DockerSandbox(Sandbox):
                     existing_id = DockerSandbox._standby_id
                     DockerSandbox._standby_id = None
 
+        self.fresh = existing_id is None
         if existing_id:
             self.container_id = existing_id
             self._reset_workspace(snapshot_id)
@@ -168,6 +172,11 @@ class DockerSandbox(Sandbox):
                  f"cat > {ENV_FILE} << 'FTLEOF'\n{env_lines}\nFTLEOF"],
                 capture_output=True,
             )
+
+        # Run setup command on fresh containers only — installs project deps that
+        # will persist in /home/ftl/.local/ for the lifetime of this container.
+        if self.fresh and setup_cmd:
+            self._run_setup(setup_cmd)
 
         return self.container_id
 
@@ -261,6 +270,7 @@ class DockerSandbox(Sandbox):
         cmd = [
             "docker", "run", "-d",
             "--network=bridge",
+            "--add-host=host.docker.internal:host-gateway",
             "--memory=2g",
             "--cpus=2",
             "-v", f"{snapshots_dir}:/mnt/snapshots:ro",
@@ -270,6 +280,23 @@ class DockerSandbox(Sandbox):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout.strip()
+
+    def exec_as_root(self, cmd):
+        """Run a shell command inside the container as root (public interface)."""
+        return self._exec_as_root(cmd)
+
+    def _run_setup(self, cmd):
+        """Run the project setup command as the ftl user with credentials sourced."""
+        if self._credentials or self._agent_env:
+            cmd = f". {ENV_FILE} && {cmd}"
+        result = subprocess.run(
+            ["docker", "exec", "-u", "ftl", "-w", "/workspace",
+             self.container_id, "sh", "-c", cmd],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result
 
     def _exec_as_root(self, cmd):
         """Run a shell command inside the container as root."""

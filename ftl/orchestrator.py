@@ -18,6 +18,22 @@ from ftl.lint import lint_diffs, display_violations
 from ftl.planner import generate_tests_from_task, run_test_code, run_verification
 
 
+def _try_start_proxy(swap_table):
+    """Start the credential-swap proxy if cryptography is available and swap_table is non-empty.
+
+    Returns the proxy instance (started), or None if disabled/unavailable.
+    """
+    if not swap_table:
+        return None
+    try:
+        from ftl.proxy import CredentialSwapProxy
+        proxy = CredentialSwapProxy(swap_table)
+        proxy.start()
+        return proxy
+    except (ImportError, RuntimeError):
+        return None
+
+
 # Agent auth env vars to forward from host into sandbox.
 AGENT_AUTH_VARS = {
     "claude-code": ["ANTHROPIC_API_KEY"],
@@ -88,24 +104,34 @@ class Session:
         self.diffs = None
         self.shadow_env = None
         self.task = None
+        self._proxy = None
 
     def start(self, task):
         """Start a new coding session: snapshot → sandbox → agent ∥ test-gen → run tests → diff."""
         # 1. Snapshot
         self.console.print("[bold]Snapshotting project...[/bold]")
-        snapshot_store = create_snapshot_store()
+        snapshot_store = create_snapshot_store(self.config)
         self.snapshot_id = snapshot_store.create(self.project_path)
         self.snapshot_path = str(Path.home() / ".ftl" / "snapshots" / self.snapshot_id)
         self.console.print(f"  Snapshot: {self.snapshot_id}")
 
-        # 2. Shadow credentials
+        # 2. Shadow credentials + proxy
         extra_vars = self.config.get("shadow_env", [])
-        self.shadow_env, _ = build_shadow_map(self.project_path, extra_vars)
+        self.shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
         if self.shadow_env:
             self.console.print(f"  Shadow credentials: {len(self.shadow_env)} keys injected")
 
-        # 3. Agent auth
+        # Start credential-swap proxy (requires cryptography; silently skipped if absent)
+        self._proxy = _try_start_proxy(swap_table)
+        if self._proxy:
+            self.console.print(
+                f"  Proxy: credential swap active on port {self._proxy.port}"
+            )
+
+        # 3. Agent auth + proxy routing env vars
         agent_env = _collect_agent_env(self.agent_name, self.config)
+        if self._proxy:
+            agent_env.update(self._proxy.env_vars())
         if agent_env:
             self.console.print(f"  Agent auth: {len(agent_env)} keys forwarded")
 
@@ -117,10 +143,19 @@ class Session:
             credentials=self.shadow_env,
             agent_env=agent_env,
             project_path=self.project_path,
+            setup_cmd=self.config.get("setup"),
         )
         self.workspace = "/workspace"
         self.agent = get_agent(self.agent_name)
         self.agent_calls = 0
+
+        # Install proxy CA cert into container trust store
+        if self._proxy:
+            self._proxy.install_ca_in_container(self.sandbox)
+
+        if self.sandbox.fresh and self.config.get("setup"):
+            self.console.print(f"  Setup: ran on fresh container")
+
         self.console.print("  Sandbox ready")
 
         # 5. Run agent + generate tests in parallel.
@@ -256,6 +291,9 @@ class Session:
         if self.sandbox:
             self.sandbox.standby()
             self.console.print(f"[dim]Snapshot {self.snapshot_id} available for rollback.[/dim]")
+        if self._proxy:
+            self._proxy.stop()
+            self._proxy = None
         self.sandbox = None
         self.agent = None
         self.agent_calls = 0

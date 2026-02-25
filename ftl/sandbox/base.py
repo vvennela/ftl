@@ -8,7 +8,8 @@ class Sandbox(ABC):
     """
 
     @abstractmethod
-    def boot(self, snapshot_path, credentials=None, agent_env=None, project_path=None):
+    def boot(self, snapshot_path, credentials=None, agent_env=None, project_path=None,
+             setup_cmd=None):
         """Boot the sandbox, reusing a persistent container for this project if available.
 
         Args:
@@ -16,6 +17,9 @@ class Sandbox(ABC):
             credentials: Shadow credential env vars for the user's project secrets.
             agent_env: Auth env vars for the agent itself (e.g., ANTHROPIC_API_KEY).
             project_path: Project directory path, used to key the persistent container.
+            setup_cmd: Shell command to run after workspace setup on fresh containers only.
+                       Runs as the sandbox user in /workspace with credentials sourced.
+                       Example: "pip install -r requirements.txt && npm install"
         """
         pass
 
@@ -36,3 +40,10 @@ class Sandbox(ABC):
     def destroy(self):
         """Tear down the sandbox and clean up resources."""
         pass
+
+    def exec_as_root(self, command):
+        """Run a shell command inside the sandbox as root. Returns CompletedProcess-like result.
+
+        Optional — not all backends support root exec. Default raises NotImplementedError.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support exec_as_root")
