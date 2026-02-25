@@ -210,15 +210,6 @@ def logs(limit, show_all):
     console.print(table)
 
 
-SESSION_COMMANDS = {
-    "test": "Run tests against current changes",
-    "diff": "Show current diff",
-    "merge": "Approve and merge changes",
-    "reject": "Discard changes",
-    "done": "Same as merge",
-}
-
-
 def shell():
     """Interactive FTL shell with session support."""
     console = Console()

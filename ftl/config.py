@@ -41,15 +41,10 @@ def load_config():
     return DEFAULT_CONFIG.copy()
 
 
-_INIT_CONFIG = {
-    "agent": "claude-code",
-    "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
-}
-
-
 def init_config(path=None):
     """Create a .ftlconfig in the given directory."""
     target = Path(path) if path else Path.cwd()
     config_path = target / FTLCONFIG
-    config_path.write_text(json.dumps(_INIT_CONFIG, indent=2))
+    init = {k: DEFAULT_CONFIG[k] for k in ("agent", "tester")}
+    config_path.write_text(json.dumps(init, indent=2))
     return config_path

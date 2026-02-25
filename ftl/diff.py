@@ -170,13 +170,7 @@ def compute_diff_from_overlay(overlay_changes, snapshot_path):
         status = "modified" if rel in snapshot_files else "created"
 
         # Binary detection: check extension or null bytes
-        is_bin = rel.suffix.lower() in {
-            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
-            ".woff", ".woff2", ".ttf", ".eot",
-            ".zip", ".tar", ".gz", ".bz2",
-            ".pdf", ".doc", ".docx",
-            ".pyc", ".pyo", ".so", ".dylib", ".dll",
-        } or b"\x00" in content_bytes[:8192]
+        is_bin = rel.suffix.lower() in BINARY_EXTENSIONS or b"\x00" in content_bytes[:8192]
 
         if is_bin:
             label = "[binary file]" if status == "created" else "[binary file changed]"

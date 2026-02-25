@@ -2,10 +2,7 @@ from abc import ABC, abstractmethod
 
 
 class Sandbox(ABC):
-    """Base interface for sandbox backends.
-
-    Implementations: DockerSandbox (MVP), VMSandbox (future).
-    """
+    """Base interface for sandbox backends."""
 
     @abstractmethod
     def boot(self, snapshot_path, credentials=None, agent_env=None, project_path=None,

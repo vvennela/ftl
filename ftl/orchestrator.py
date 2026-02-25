@@ -96,7 +96,7 @@ class Session:
         self.project_path = str(self.config_path.parent)
 
         self.agent_name = self.config.get("agent", "claude-code")
-        self.tester = self.config.get("tester", "bedrock/us.amazon.nova-lite-v1:0")
+        self.tester = self.config.get("tester", "bedrock/us.anthropic.claude-sonnet-4-6")
 
         self.sandbox = None
         self.agent = None
@@ -191,6 +191,11 @@ class Session:
             agent_future = executor.submit(_run_agent)
             test_future = executor.submit(generate_tests_from_task, task, self.tester)
 
+        try:
+            agent_future.result()
+        except Exception as e:
+            self.console.print(f"[yellow]  Agent error: {e}[/yellow]")
+
         self.agent_calls = 1
         timer.mark("agent")
 
@@ -264,7 +269,7 @@ class Session:
                 "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
             )
 
-        planner_model = self.config.get("planner_model", "bedrock/us.amazon.nova-lite-v1:0")
+        planner_model = self.config.get("planner_model", self.tester)
         approved = review_diff(diffs, planner_model)
 
         if approved:

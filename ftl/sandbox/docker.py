@@ -152,10 +152,10 @@ class DockerSandbox(Sandbox):
         self.fresh = existing_id is None
         if existing_id:
             self.container_id = existing_id
-            self._reset_workspace(snapshot_id)
+            self._init_workspace(snapshot_id, wipe=True)
         else:
             self.container_id = self._create()
-            self._setup_workspace(snapshot_id)
+            self._init_workspace(snapshot_id, wipe=False)
 
         # Persist so the next `ftl code` invocation can reuse this container
         if self._project_path:
@@ -180,14 +180,17 @@ class DockerSandbox(Sandbox):
 
         return self.container_id
 
+    def _with_env(self, cmd):
+        """Prepend ENV_FILE sourcing if any credentials/agent env are configured."""
+        if self._credentials or self._agent_env:
+            return f". {ENV_FILE} && {cmd}"
+        return cmd
+
     def exec(self, command, timeout=DEFAULT_TIMEOUT):
         """Run a command inside the container with credentials sourced."""
-        if self._credentials or self._agent_env:
-            command = f". {ENV_FILE} && {command}"
-
         try:
             result = subprocess.run(
-                ["docker", "exec", self.container_id, "sh", "-c", command],
+                ["docker", "exec", self.container_id, "sh", "-c", self._with_env(command)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -203,11 +206,8 @@ class DockerSandbox(Sandbox):
         Merges stderr into stdout so errors appear live. Accumulates full output
         and returns (exit_code, stdout, stderr) matching the exec() interface.
         """
-        if self._credentials or self._agent_env:
-            command = f". {ENV_FILE} && {command}"
-
         proc = subprocess.Popen(
-            ["docker", "exec", self.container_id, "sh", "-c", command],
+            ["docker", "exec", self.container_id, "sh", "-c", self._with_env(command)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -237,7 +237,7 @@ class DockerSandbox(Sandbox):
             "python3 /tmp/_ftl_diff.py\n"
             "rm -f /tmp/_ftl_diff.py"
         )
-        result = self._exec_as_root(cmd)
+        result = self.exec_as_root(cmd)
         try:
             overlay_changes = json.loads(result.stdout)
         except (json.JSONDecodeError, ValueError):
@@ -282,23 +282,6 @@ class DockerSandbox(Sandbox):
         return result.stdout.strip()
 
     def exec_as_root(self, cmd):
-        """Run a shell command inside the container as root (public interface)."""
-        return self._exec_as_root(cmd)
-
-    def _run_setup(self, cmd):
-        """Run the project setup command as the ftl user with credentials sourced."""
-        if self._credentials or self._agent_env:
-            cmd = f". {ENV_FILE} && {cmd}"
-        result = subprocess.run(
-            ["docker", "exec", "-u", "ftl", "-w", "/workspace",
-             self.container_id, "sh", "-c", cmd],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        return result
-
-    def _exec_as_root(self, cmd):
         """Run a shell command inside the container as root."""
         return subprocess.run(
             ["docker", "exec", "-u", "root", self.container_id, "sh", "-c", cmd],
@@ -306,31 +289,31 @@ class DockerSandbox(Sandbox):
             text=True,
         )
 
-    def _setup_workspace(self, snapshot_id):
-        """Populate /workspace from snapshot — runs as a Linux-internal cp."""
-        cmds = "; ".join([
-            f"cp -a /mnt/snapshots/{snapshot_id}/. /workspace/",
-            "rm -f /workspace/.ftl_meta",
-            "chown -R ftl:ftl /workspace",
-        ])
-        result = self._exec_as_root(cmds)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to set up workspace: {result.stderr or result.stdout}"
-            )
+    def _run_setup(self, cmd):
+        """Run the project setup command as the ftl user with credentials sourced."""
+        result = subprocess.run(
+            ["docker", "exec", "-u", "ftl", "-w", "/workspace",
+             self.container_id, "sh", "-c", self._with_env(cmd)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result
 
-    def _reset_workspace(self, snapshot_id):
-        """Wipe /workspace and repopulate from snapshot — no host-side copying."""
-        cmds = "; ".join([
-            "find /workspace -mindepth 1 -delete",
+    def _init_workspace(self, snapshot_id, wipe=False):
+        """Populate /workspace from snapshot. If wipe=True, clears it first."""
+        cmds = []
+        if wipe:
+            cmds.append("find /workspace -mindepth 1 -delete")
+        cmds.extend([
             f"cp -a /mnt/snapshots/{snapshot_id}/. /workspace/",
             "rm -f /workspace/.ftl_meta",
             "chown -R ftl:ftl /workspace",
         ])
-        result = self._exec_as_root(cmds)
+        result = self.exec_as_root("; ".join(cmds))
         if result.returncode != 0:
             raise RuntimeError(
-                f"Failed to reset workspace: {result.stderr or result.stdout}"
+                f"Failed to initialize workspace: {result.stderr or result.stdout}"
             )
 
     def _is_alive(self, container_id):

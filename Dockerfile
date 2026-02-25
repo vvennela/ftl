@@ -48,8 +48,8 @@ RUN find /usr -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; \
 RUN useradd -m -s /bin/bash ftl
 ENV PATH="/home/ftl/.local/bin:${PATH}"
 
-# OverlayFS mount points (must be created as root before USER ftl)
-RUN mkdir -p /mnt/lower /mnt/upper /mnt/work /mnt/snapshot /mnt/snapshots
+# Snapshots mount point (bind-mounted read-only at container run time)
+RUN mkdir -p /mnt/snapshots
 
 WORKDIR /workspace
 RUN chown ftl:ftl /workspace

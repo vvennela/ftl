@@ -11,9 +11,12 @@ def _extract_missing_modules(output):
     return {m.split(".")[0] for m in pattern.findall(output)}
 
 
+_FENCE_RE = re.compile(r"^```\w*\n(.*?)```$", re.DOTALL)
+
+
 def _strip_fence(code):
     """Strip markdown code fences if present."""
-    match = re.compile(r"^```\w*\n(.*?)```$", re.DOTALL).search(code.strip())
+    match = _FENCE_RE.search(code.strip())
     return match.group(1) if match else code
 
 
