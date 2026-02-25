@@ -59,10 +59,14 @@ def code(task):
     run_task(task)
 
 
-@main.command()
+@main.group(invoke_without_command=True)
 @click.option("--all", "show_all", is_flag=True, help="Show snapshots for all projects.")
-def snapshots(show_all):
-    """List project snapshots. Use --all for all projects."""
+@click.pass_context
+def snapshots(ctx, show_all):
+    """List and manage project snapshots."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     from ftl.snapshot import create_snapshot_store
 
     console = Console()
@@ -74,7 +78,7 @@ def snapshots(show_all):
         raise SystemExit(1)
 
     project_filter = str(config_path.parent) if config_path and not show_all else None
-    snapshot_list = store.list(project_filter)
+    snapshot_list = _snapshots_sorted(store, project_filter)
 
     if not snapshot_list:
         console.print("[dim]No snapshots found.[/dim]")
@@ -86,11 +90,66 @@ def snapshots(show_all):
     table.add_column("Created", style="dim")
 
     for s in snapshot_list:
-        snap_path = Path.home() / ".ftl" / "snapshots" / s["id"]
-        created = datetime.fromtimestamp(snap_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        table.add_row(s["id"], s["project"], created)
+        table.add_row(s["id"], s["project"], s["created"])
 
     console.print(table)
+
+
+def _snapshots_sorted(store, project_filter=None):
+    """Return snapshots sorted oldest-first, with a 'created' field."""
+    raw = store.list(project_filter)
+    result = []
+    for s in raw:
+        snap_path = Path.home() / ".ftl" / "snapshots" / s["id"]
+        mtime = snap_path.stat().st_mtime
+        result.append({**s, "mtime": mtime, "created": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")})
+    return sorted(result, key=lambda s: s["mtime"])
+
+
+@snapshots.command("clean")
+@click.option("--last", "last_n", type=int, default=None, help="Delete the N most recent snapshots.")
+@click.option("--all", "delete_all", is_flag=True, help="Delete all snapshots.")
+@click.option("--project-only", is_flag=True, help="Limit to snapshots from the current project.")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
+def snapshots_clean(last_n, delete_all, project_only, yes):
+    """Delete snapshots. Use --last N or --all."""
+    from ftl.snapshot import create_snapshot_store
+
+    console = Console()
+    store = create_snapshot_store()
+
+    if not last_n and not delete_all:
+        console.print("[red]Specify --last N or --all.[/red]")
+        raise SystemExit(1)
+
+    config_path = find_config()
+    project_filter = str(config_path.parent) if project_only and config_path else None
+    all_snaps = _snapshots_sorted(store, project_filter)
+
+    if delete_all:
+        targets = all_snaps
+    else:
+        targets = all_snaps[-last_n:]  # most recent N (list is oldest-first)
+
+    if not targets:
+        console.print("[dim]No snapshots to delete.[/dim]")
+        return
+
+    console.print(f"[bold]About to delete {len(targets)} snapshot(s):[/bold]")
+    for s in targets:
+        console.print(f"  [cyan]{s['id']}[/cyan]  {s['project']}  [dim]{s['created']}[/dim]")
+
+    if not yes:
+        confirm = input("\nDelete these snapshots? (y/n) > ").strip().lower()
+        if confirm not in ("y", "yes"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    for s in targets:
+        store.delete(s["id"])
+        console.print(f"  [red]Deleted[/red] {s['id']}")
+
+    console.print(f"[bold green]Done. {len(targets)} snapshot(s) removed.[/bold green]")
 
 
 @main.command()
@@ -170,7 +229,7 @@ def shell():
 
     config = load_config()
     console.print("[bold]FTL Shell[/bold]")
-    console.print(f"[dim]Agent: {config['agent']} | Tester: {config['tester']} | Planner: {config.get('planner_model', 'default')}[/dim]")
+    console.print(f"[dim]Agent: {config['agent']} | Tester: {config['tester']}[/dim]")
     console.print("[dim]Type a task to start. Commands: test, diff, merge, reject, list, restore <id>, exit[/dim]\n")
 
     from ftl.snapshot import create_snapshot_store
@@ -257,8 +316,5 @@ def shell():
         session = Session()
         session.start(user_input)
 
-        if session.diffs:
-            console.print("\n[bold]Session active.[/bold] Commands: test, diff, merge, reject")
-            console.print("[dim]Or type a follow-up instruction for the agent.[/dim]")
-        else:
-            session = None
+        console.print("\n[bold]Session active.[/bold] Commands: test, diff, merge, reject")
+        console.print("[dim]Or type a follow-up instruction for the agent.[/dim]")

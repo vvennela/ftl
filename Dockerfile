@@ -27,8 +27,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
-# pytest (--break-system-packages because no venv in container)
-RUN pip3 install --break-system-packages pytest
+# pytest + common API/web packages (--break-system-packages because no venv in container)
+RUN pip3 install --break-system-packages \
+    pytest \
+    stripe \
+    requests \
+    httpx \
+    boto3 \
+    openai \
+    anthropic \
+    python-dotenv \
+    pydantic
 
 # Strip unnecessary files
 RUN find /usr -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; \
@@ -38,6 +47,9 @@ RUN find /usr -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; \
 # Create non-root user for Claude Code (refuses --dangerously-skip-permissions as root)
 RUN useradd -m -s /bin/bash ftl
 ENV PATH="/home/ftl/.local/bin:${PATH}"
+
+# OverlayFS mount points (must be created as root before USER ftl)
+RUN mkdir -p /mnt/lower /mnt/upper /mnt/work /mnt/snapshot /mnt/snapshots
 
 WORKDIR /workspace
 RUN chown ftl:ftl /workspace

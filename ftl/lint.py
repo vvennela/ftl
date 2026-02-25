@@ -2,8 +2,7 @@
 
 Scans diffs for:
 1. Hardcoded shadow credential values (ftl_shadow_*)
-2. Direct credential access (os.getenv/os.environ for shadowed vars)
-3. Known credential patterns (sk_live_, sk_test_, eyJhbG, etc.)
+2. Known credential patterns (sk_live_, sk_test_, eyJhbG, etc.)
 """
 
 import re
@@ -11,13 +10,6 @@ from rich.console import Console
 
 # Matches ftl_shadow_<name>_<hex> — agent should never hardcode these
 SHADOW_PATTERN = re.compile(r"ftl_shadow_\w+_[0-9a-f]{16}")
-
-# Direct env access patterns — agent should use config/client, not raw access
-ENV_ACCESS_PATTERNS = [
-    re.compile(r"""os\.getenv\(\s*['"]({keys})['"]\s*\)"""),
-    re.compile(r"""os\.environ\[['"]({keys})['"]\]"""),
-    re.compile(r"""os\.environ\.get\(\s*['"]({keys})['"]\s*\)"""),
-]
 
 # Known credential prefixes/patterns that should never appear as literals
 CREDENTIAL_PATTERNS = [
@@ -48,17 +40,6 @@ class LintViolation:
         return f"{self.file_path}:{self.line_num} — {self.reason}"
 
 
-def _build_env_patterns(shadow_keys):
-    """Build regex patterns for direct access to shadowed env var names."""
-    if not shadow_keys:
-        return []
-    keys_alt = "|".join(re.escape(k) for k in shadow_keys)
-    return [
-        re.compile(p.pattern.format(keys=keys_alt))
-        for p in ENV_ACCESS_PATTERNS
-    ]
-
-
 def lint_diffs(diffs, shadow_env=None):
     """Scan added lines in diffs for credential violations.
 
@@ -72,7 +53,6 @@ def lint_diffs(diffs, shadow_env=None):
     """
     violations = []
     shadow_values = set((shadow_env or {}).values())
-    env_patterns = _build_env_patterns(shadow_env)
 
     for diff in diffs:
         path = diff["path"]
@@ -88,7 +68,7 @@ def lint_diffs(diffs, shadow_env=None):
             if tag != "+":
                 continue
 
-            # 1. Hardcoded shadow values
+            # 1. Hardcoded shadow values (ftl_shadow_* pattern or exact value)
             if SHADOW_PATTERN.search(content):
                 violations.append(LintViolation(
                     path, line_num, content,
@@ -96,7 +76,6 @@ def lint_diffs(diffs, shadow_env=None):
                 ))
                 continue
 
-            # Also check for exact shadow values (in case format changes)
             for sv in shadow_values:
                 if sv in content:
                     violations.append(LintViolation(
@@ -105,23 +84,14 @@ def lint_diffs(diffs, shadow_env=None):
                     ))
                     break
             else:
-                # 2. Direct env access for shadowed vars
-                for pat in env_patterns:
+                # 2. Known hardcoded credential patterns
+                for pat in CREDENTIAL_PATTERNS:
                     if pat.search(content):
                         violations.append(LintViolation(
                             path, line_num, content,
-                            "Direct credential access — use a configured client instead"
+                            "Possible hardcoded credential"
                         ))
                         break
-                else:
-                    # 3. Known credential patterns
-                    for pat in CREDENTIAL_PATTERNS:
-                        if pat.search(content):
-                            violations.append(LintViolation(
-                                path, line_num, content,
-                                "Possible hardcoded credential"
-                            ))
-                            break
 
     return violations
 

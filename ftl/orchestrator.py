@@ -1,18 +1,21 @@
 import os
+import platform
 import shutil
-import tempfile
+import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from rich.console import Console
 
 from ftl.config import load_config, find_config
 from ftl.credentials import build_shadow_map
-from ftl.ignore import get_ignore_set, should_ignore
 from ftl.log import write_log
 from ftl.snapshot import create_snapshot_store
 from ftl.sandbox import create_sandbox
+from ftl.agents import get_agent
 from ftl.diff import display_diff, review_diff
 from ftl.lint import lint_diffs, display_violations
-from ftl.planner import PlannerLoop
+from ftl.planner import generate_tests_from_task, run_test_code, run_verification
 
 
 # Agent auth env vars to forward from host into sandbox.
@@ -34,33 +37,25 @@ def _collect_agent_env(agent_name, config):
     return env
 
 
-def _copy_project_to_workspace(project_path, workspace, ignore_set):
-    """Copy project to temp workspace, respecting ignore rules."""
-    project = Path(project_path)
-    for item in project.rglob("*"):
-        relative = item.relative_to(project)
-        if should_ignore(relative, ignore_set):
-            continue
-        dest = Path(workspace) / relative
-        if item.is_dir():
-            dest.mkdir(parents=True, exist_ok=True)
-        else:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dest)
-
-
 def _merge_changes(diffs, workspace, project_path):
-    """Apply only the actual changes back to the project (diff-driven merge)."""
+    """Apply only the actual changes back to the project (diff-driven merge).
+
+    For diffs produced by get_diff(), content is in diff["_content_bytes"].
+    Falls back to shutil.copy2 from a local workspace path if not present.
+    """
     workspace = Path(workspace)
     project = Path(project_path)
 
     for diff in diffs:
         rel = Path(diff["path"])
         if diff["status"] in ("created", "modified"):
-            src = workspace / rel
             dest = project / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
+            if "_content_bytes" in diff:
+                dest.write_bytes(diff["_content_bytes"])
+            else:
+                src = workspace / rel
+                shutil.copy2(src, dest)
         elif diff["status"] == "deleted":
             target = project / rel
             if target.exists():
@@ -70,8 +65,9 @@ def _merge_changes(diffs, workspace, project_path):
 class Session:
     """An active FTL coding session.
 
-    Manages the sandbox, planner loop, and workspace for a task.
-    Supports follow-up messages, manual test/diff/merge commands.
+    Manages the sandbox, agent, and diff state for a task.
+    Agent and tester run in parallel — tests are generated from the task
+    description while the agent codes, then run immediately when both finish.
     """
 
     def __init__(self):
@@ -81,24 +77,20 @@ class Session:
         self.project_path = str(self.config_path.parent)
 
         self.agent_name = self.config.get("agent", "claude-code")
-        self.tester = self.config.get("tester", "bedrock/deepseek-r1")
+        self.tester = self.config.get("tester", "bedrock/us.amazon.nova-lite-v1:0")
 
         self.sandbox = None
-        self.planner = None
-        self.workspace = None
+        self.agent = None
+        self.agent_calls = 0
         self.snapshot_id = None
         self.snapshot_path = None
+        self.workspace = None
         self.diffs = None
         self.shadow_env = None
         self.task = None
 
     def start(self, task):
-        """Start a new coding session with the given task."""
-        # Validate
-        if self.tester == self.agent_name:
-            self.console.print("[red]Error: tester cannot be the same as agent.[/red]")
-            raise SystemExit(1)
-
+        """Start a new coding session: snapshot → sandbox → agent ∥ test-gen → run tests → diff."""
         # 1. Snapshot
         self.console.print("[bold]Snapshotting project...[/bold]")
         snapshot_store = create_snapshot_store()
@@ -106,35 +98,58 @@ class Session:
         self.snapshot_path = str(Path.home() / ".ftl" / "snapshots" / self.snapshot_id)
         self.console.print(f"  Snapshot: {self.snapshot_id}")
 
-        # 2. Copy to workspace (filtered)
-        ignore_set = get_ignore_set(self.project_path)
-        self.workspace = tempfile.mkdtemp(prefix="ftl_workspace_")
-        _copy_project_to_workspace(self.project_path, self.workspace, ignore_set)
-
-        # 3. Shadow credentials
+        # 2. Shadow credentials
         extra_vars = self.config.get("shadow_env", [])
-        self.shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
-        shadow_env = self.shadow_env
-        if shadow_env:
-            self.console.print(f"  Shadow credentials: {len(shadow_env)} keys injected")
+        self.shadow_env, _ = build_shadow_map(self.project_path, extra_vars)
+        if self.shadow_env:
+            self.console.print(f"  Shadow credentials: {len(self.shadow_env)} keys injected")
 
-        # 4. Agent auth
+        # 3. Agent auth
         agent_env = _collect_agent_env(self.agent_name, self.config)
         if agent_env:
             self.console.print(f"  Agent auth: {len(agent_env)} keys forwarded")
 
-        # 5. Boot sandbox
+        # 4. Boot sandbox
         self.console.print("[bold]Booting sandbox...[/bold]")
         self.sandbox = create_sandbox()
-        self.sandbox.boot(self.workspace, credentials=shadow_env, agent_env=agent_env)
+        self.sandbox.boot(
+            self.snapshot_path,
+            credentials=self.shadow_env,
+            agent_env=agent_env,
+            project_path=self.project_path,
+        )
+        self.workspace = "/workspace"
+        self.agent = get_agent(self.agent_name)
+        self.agent_calls = 0
         self.console.print("  Sandbox ready")
 
-        # 6. Create planner and run
-        self.planner = PlannerLoop(
-            self.config, self.sandbox, self.snapshot_path, self.workspace
+        # 5. Run agent + generate tests in parallel.
+        #    Tests generate while the agent codes; when the agent finishes the
+        #    diff is shown immediately and tests run in a background thread.
+        self.console.print(
+            f"[bold]Running agent[/bold]"
+            f"[dim]  (generating tests in parallel via {self.tester})[/dim]"
         )
+
+        def _run_agent():
+            def _stream(line):
+                self.console.print(line, end="", highlight=False)
+            return self.agent.run(task, "/workspace", self.sandbox, callback=_stream)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            agent_future = executor.submit(_run_agent)
+            test_future = executor.submit(generate_tests_from_task, task, self.tester)
+
+        self.agent_calls = 1
+
+        # 6. Run tests — generation was parallel so test_future is usually
+        #    already done by the time the agent finishes.
+        test_code = test_future.result()
+        if test_code:
+            self.console.print("[bold]Running tests...[/bold]")
+            run_test_code(test_code, self.sandbox, self.console)
+
         self.task = task
-        self.diffs = self.planner.run(task)
 
         write_log({
             "event": "session_start",
@@ -142,49 +157,53 @@ class Session:
             "snapshot": self.snapshot_id,
             "project": self.project_path,
             "agent": self.agent_name,
-            "files_changed": len(self.diffs) if self.diffs else 0,
         })
 
-        if not self.diffs:
-            self.console.print("[dim]No changes detected.[/dim]")
+    def _get_diffs(self):
+        """Return diffs, computing lazily on first call."""
+        if self.diffs is None and self.sandbox:
+            self.diffs = self.sandbox.get_diff(self.snapshot_path)
+        return self.diffs or []
 
     def follow_up(self, message):
-        """Send a follow-up instruction to the planner (continues the session)."""
-        if not self.planner:
+        """Send a follow-up instruction to the agent (continues the session)."""
+        if not self.sandbox:
             self.console.print("[red]No active session. Type a task first.[/red]")
             return
 
-        self.planner.inject_message(message)
-        self.diffs = self.planner.run(message)  # run() skips re-adding since messages already set
+        self.console.print(f"[bold cyan]  → Agent: {message}[/bold cyan]")
+
+        def _stream(line):
+            self.console.print(line, end="", highlight=False)
+
+        self.agent.continue_run(message, "/workspace", self.sandbox, callback=_stream)
+        self.agent_calls += 1
+        self.diffs = None  # invalidate; recomputed on next access
 
     def show_diff(self):
         """Display the current diff."""
-        if not self.diffs:
-            from ftl.diff import compute_diff
-            self.diffs = compute_diff(self.snapshot_path, self.workspace)
-        display_diff(self.diffs)
+        display_diff(self._get_diffs())
 
     def run_tests(self):
-        """Manually trigger tests."""
+        """Manually trigger tests against the current diff."""
         if not self.sandbox:
             self.console.print("[red]No active session.[/red]")
             return
-        from ftl.diff import compute_diff
-        from ftl.planner import run_verification
-        self.diffs = compute_diff(self.snapshot_path, self.workspace)
-        if not self.diffs:
+        diffs = self._get_diffs()
+        if not diffs:
             self.console.print("[dim]No changes to test.[/dim]")
             return
-        run_verification(self.diffs, self.tester, self.sandbox)
+        run_verification(diffs, self.tester, self.sandbox)
 
     def merge(self):
         """Approve and merge changes back to the project."""
-        if not self.diffs:
+        diffs = self._get_diffs()
+        if not diffs:
             self.console.print("[dim]No changes to merge.[/dim]")
+            self._cleanup()
             return
 
-        # Run credential lint before review
-        violations = lint_diffs(self.diffs, self.shadow_env)
+        violations = lint_diffs(diffs, self.shadow_env)
         display_violations(violations)
         if violations:
             self.console.print(
@@ -192,12 +211,12 @@ class Session:
                 "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
             )
 
-        planner_model = self.config.get("planner_model", "bedrock/amazon.nova-lite-v1:0")
-        approved = review_diff(self.diffs, planner_model)
+        planner_model = self.config.get("planner_model", "bedrock/us.amazon.nova-lite-v1:0")
+        approved = review_diff(diffs, planner_model)
 
         if approved:
             self.console.print("[bold green]Approved. Merging changes...[/bold green]")
-            _merge_changes(self.diffs, self.workspace, self.project_path)
+            _merge_changes(diffs, self.workspace, self.project_path)
             self.console.print("  Changes merged to project.")
             write_log({
                 "event": "merge",
@@ -205,7 +224,7 @@ class Session:
                 "snapshot": self.snapshot_id,
                 "project": self.project_path,
                 "result": "merged",
-                "files_changed": len(self.diffs),
+                "files_changed": len(diffs),
                 "lint_violations": len(violations),
             })
         else:
@@ -233,32 +252,50 @@ class Session:
         self._cleanup()
 
     def _cleanup(self):
-        """Clean up sandbox and workspace."""
+        """Put sandbox on standby and clear session state."""
         if self.sandbox:
             self.sandbox.standby()
             self.console.print(f"[dim]Snapshot {self.snapshot_id} available for rollback.[/dim]")
-        if self.workspace:
-            try:
-                shutil.rmtree(self.workspace)
-            except OSError as e:
-                self.console.print(f"[yellow]Warning: Failed to clean up {self.workspace}: {e}[/yellow]")
         self.sandbox = None
-        self.planner = None
+        self.agent = None
+        self.agent_calls = 0
         self.workspace = None
         self.diffs = None
         self.shadow_env = None
 
     @property
     def is_active(self):
-        return self.planner is not None
+        return self.sandbox is not None
+
+
+def _notify(title, message):
+    """Send a system notification. Best-effort — never raises."""
+    try:
+        if platform.system() == "Darwin":
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
+                capture_output=True,
+            )
+        elif platform.system() == "Linux":
+            subprocess.run(["notify-send", title, message], capture_output=True)
+    except Exception:
+        pass
+
+
+def _fmt_elapsed(seconds):
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s}s" if m else f"{s}s"
 
 
 def run_task(task):
     """One-shot mode: run task, review, merge/reject, done."""
+    t0 = time.time()
     session = Session()
     session.start(task)
 
-    if session.diffs:
-        session.merge()  # triggers interactive review
-    else:
-        session._cleanup()
+    elapsed = _fmt_elapsed(time.time() - t0)
+    session.console.print(f"\n[dim]Completed in {elapsed}[/dim]")
+    _notify("FTL", f"Done in {elapsed}")
+
+    # merge() computes diff lazily; cleans up whether or not there are changes
+    session.merge()

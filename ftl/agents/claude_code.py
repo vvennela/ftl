@@ -4,16 +4,16 @@ from ftl.agents.base import Agent
 
 class ClaudeCodeAgent(Agent):
 
-    def run(self, task, workspace, sandbox):
+    def run(self, task, workspace, sandbox, callback=None):
         escaped = shlex.quote(task)
-        return sandbox.exec(
-            f'cd {workspace} && claude -p {escaped} --dangerously-skip-permissions',
-            timeout=3600,
-        )
+        cmd = f'cd {workspace} && claude -p {escaped} --dangerously-skip-permissions'
+        if callback is not None:
+            return sandbox.exec_stream(cmd, callback=callback, timeout=3600)
+        return sandbox.exec(cmd, timeout=3600)
 
-    def continue_run(self, task, workspace, sandbox):
+    def continue_run(self, task, workspace, sandbox, callback=None):
         escaped = shlex.quote(task)
-        return sandbox.exec(
-            f'cd {workspace} && claude -p {escaped} -c --dangerously-skip-permissions',
-            timeout=3600,
-        )
+        cmd = f'cd {workspace} && claude -p {escaped} -c --dangerously-skip-permissions'
+        if callback is not None:
+            return sandbox.exec_stream(cmd, callback=callback, timeout=3600)
+        return sandbox.exec(cmd, timeout=3600)

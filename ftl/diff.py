@@ -1,3 +1,4 @@
+import base64
 import difflib
 from pathlib import Path
 import litellm
@@ -25,13 +26,17 @@ def _is_binary(file_path):
         return False
 
 
-DIFF_IGNORE = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
+DIFF_IGNORE = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules", "site-packages", "venv", ".venv"}
+
+_DIFF_IGNORE_SUFFIXES = (".dist-info", ".egg-info", ".egg-link")
 
 
 def _should_ignore_in_diff(rel_path):
     """Filter out build artifacts from diffs."""
     for part in rel_path.parts:
         if part in DIFF_IGNORE:
+            return True
+        if part.endswith(_DIFF_IGNORE_SUFFIXES):
             return True
     return False
 
@@ -112,6 +117,129 @@ def compute_diff(snapshot_path, workspace_path):
         })
 
     return diffs
+
+
+def compute_diff_from_overlay(overlay_changes, snapshot_path):
+    """Compute structured diffs from the overlay upper layer.
+
+    overlay_changes: list of dicts from sandbox.get_diff():
+        [{"path": str, "deleted": bool, "content_b64": str}]
+    snapshot_path: local path to the read-only snapshot dir.
+
+    Returns the same format as compute_diff(), with an extra "_content_bytes" key
+    on created/modified entries so _merge_changes() can write them directly.
+    """
+    snapshot_path = Path(snapshot_path)
+
+    snapshot_files = {
+        f.relative_to(snapshot_path)
+        for f in snapshot_path.rglob("*")
+        if f.is_file()
+        and f.name != ".ftl_meta"
+        and not _should_ignore_in_diff(f.relative_to(snapshot_path))
+    }
+
+    diffs = []
+
+    for change in overlay_changes:
+        rel = Path(change["path"])
+
+        if _should_ignore_in_diff(rel):
+            continue
+
+        if change["deleted"]:
+            snapshot_file = snapshot_path / rel
+            if not snapshot_file.exists():
+                continue
+            if _is_binary(snapshot_file):
+                diffs.append({
+                    "path": str(rel),
+                    "status": "deleted",
+                    "lines": [("-", "[binary file]")],
+                })
+            else:
+                old_lines = snapshot_file.read_text(errors="replace").splitlines()
+                diffs.append({
+                    "path": str(rel),
+                    "status": "deleted",
+                    "lines": [("-", line) for line in old_lines],
+                })
+            continue
+
+        content_bytes = base64.b64decode(change["content_b64"])
+        status = "modified" if rel in snapshot_files else "created"
+
+        # Binary detection: check extension or null bytes
+        is_bin = rel.suffix.lower() in {
+            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
+            ".woff", ".woff2", ".ttf", ".eot",
+            ".zip", ".tar", ".gz", ".bz2",
+            ".pdf", ".doc", ".docx",
+            ".pyc", ".pyo", ".so", ".dylib", ".dll",
+        } or b"\x00" in content_bytes[:8192]
+
+        if is_bin:
+            label = "[binary file]" if status == "created" else "[binary file changed]"
+            tag = "+" if status == "created" else " "
+            diffs.append({
+                "path": str(rel),
+                "status": status,
+                "lines": [(tag, label)],
+                "_content_bytes": content_bytes,
+            })
+            continue
+
+        new_text = content_bytes.decode(errors="replace").splitlines()
+
+        if status == "created":
+            diffs.append({
+                "path": str(rel),
+                "status": "created",
+                "lines": [("+", line) for line in new_text],
+                "_content_bytes": content_bytes,
+            })
+        else:
+            old_file = snapshot_path / rel
+            if _is_binary(old_file):
+                diffs.append({
+                    "path": str(rel),
+                    "status": "modified",
+                    "lines": [(" ", "[binary file changed]")],
+                    "_content_bytes": content_bytes,
+                })
+                continue
+
+            old_text = old_file.read_text(errors="replace").splitlines()
+            if old_text == new_text:
+                continue  # file in upper layer but no actual change
+
+            lines = []
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+                None, old_text, new_text
+            ).get_opcodes():
+                if tag == "equal":
+                    for line in old_text[i1:i2]:
+                        lines.append((" ", line))
+                elif tag == "delete":
+                    for line in old_text[i1:i2]:
+                        lines.append(("-", line))
+                elif tag == "insert":
+                    for line in new_text[j1:j2]:
+                        lines.append(("+", line))
+                elif tag == "replace":
+                    for line in old_text[i1:i2]:
+                        lines.append(("-", line))
+                    for line in new_text[j1:j2]:
+                        lines.append(("+", line))
+
+            diffs.append({
+                "path": str(rel),
+                "status": "modified",
+                "lines": lines,
+                "_content_bytes": content_bytes,
+            })
+
+    return sorted(diffs, key=lambda d: d["path"])
 
 
 def diff_to_text(diffs):

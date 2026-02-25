@@ -1,10 +1,26 @@
 import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from ftl.snapshot.base import SnapshotStore
-from ftl.ignore import get_ignore_set, should_ignore
+from ftl.ignore import get_ignore_set
 
 SNAPSHOT_DIR = Path.home() / ".ftl" / "snapshots"
+
+# Files/dirs always excluded from snapshots regardless of .ftlignore
+_RSYNC_EXCLUDES = [
+    ".git",
+    "__pycache__",
+    "*.pyc",
+    "node_modules",
+    ".venv",
+    "venv",
+    "*.egg-info",
+    "*.dist-info",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+]
 
 
 class LocalSnapshotStore(SnapshotStore):
@@ -13,24 +29,24 @@ class LocalSnapshotStore(SnapshotStore):
         project_path = Path(project_path).resolve()
         snapshot_id = uuid.uuid4().hex[:8]
         snapshot_path = SNAPSHOT_DIR / snapshot_id
-
-        ignore_set = get_ignore_set(project_path)
-
         snapshot_path.mkdir(parents=True, exist_ok=True)
 
-        meta_file = snapshot_path / ".ftl_meta"
-        meta_file.write_text(str(project_path))
+        # Write meta before copy so rsync picks it up
+        (snapshot_path / ".ftl_meta").write_text(str(project_path))
 
-        for item in project_path.rglob("*"):
-            relative = item.relative_to(project_path)
-            if should_ignore(relative, ignore_set):
-                continue
-            dest = snapshot_path / relative
-            if item.is_dir():
-                dest.mkdir(parents=True, exist_ok=True)
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dest)
+        # Build exclude args from hardcoded list + .ftlignore patterns
+        ignore_set = get_ignore_set(project_path)
+        excludes = list(_RSYNC_EXCLUDES) + [f"/{p}" for p in ignore_set]
+        exclude_args = []
+        for e in excludes:
+            exclude_args += ["--exclude", e]
+
+        subprocess.run(
+            ["rsync", "-a", "--delete"] + exclude_args +
+            [str(project_path) + "/", str(snapshot_path) + "/"],
+            check=True,
+            capture_output=True,
+        )
 
         return snapshot_id
 

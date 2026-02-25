@@ -6,9 +6,9 @@ FTLCONFIG = ".ftlconfig"
 REQUIRED_KEYS = {"agent", "tester"}
 
 DEFAULT_CONFIG = {
-    "planner_model": "bedrock/amazon.nova-lite-v1:0",
+    "planner_model": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "agent": "claude-code",
-    "tester": "bedrock/deepseek-r1",
+    "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
     "planner_max_steps": 20,
 }
 
