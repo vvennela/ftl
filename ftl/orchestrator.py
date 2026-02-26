@@ -17,6 +17,7 @@ from ftl.diff import display_diff, review_diff
 from ftl.lint import lint_diffs, display_violations
 from ftl.planner import generate_tests_from_task, run_test_code, run_verification
 from ftl.tracing import setup_langfuse, StageTimer, AgentHeartbeat
+from ftl.render import AgentRenderer
 
 setup_langfuse()
 
@@ -177,14 +178,16 @@ class Session:
         )
 
         heartbeat = AgentHeartbeat(self.console)
+        renderer = AgentRenderer(self.console)
 
         def _run_agent():
             heartbeat.start()
             def _stream(line):
                 heartbeat.stop()
-                self.console.print(line, end="", highlight=False)
+                renderer.feed(line)
             result = self.agent.run(task, "/workspace", self.sandbox, callback=_stream)
             heartbeat.stop()
+            renderer.finish()
             return result
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -231,10 +234,9 @@ class Session:
 
         self.console.print(f"[bold cyan]  → Agent: {message}[/bold cyan]")
 
-        def _stream(line):
-            self.console.print(line, end="", highlight=False)
-
-        self.agent.continue_run(message, "/workspace", self.sandbox, callback=_stream)
+        renderer = AgentRenderer(self.console)
+        self.agent.continue_run(message, "/workspace", self.sandbox, callback=renderer.feed)
+        renderer.finish()
         self.agent_calls += 1
         self.diffs = None  # invalidate; recomputed on next access
 

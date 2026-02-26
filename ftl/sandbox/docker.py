@@ -178,6 +178,10 @@ class DockerSandbox(Sandbox):
         if self.fresh and setup_cmd:
             self._run_setup(setup_cmd)
 
+        # Pre-warm Node.js in the background — loads Claude Code modules into the
+        # Linux page cache so the first agent invocation doesn't pay cold-start cost.
+        threading.Thread(target=self._prewarm_node, daemon=True).start()
+
         return self.container_id
 
     def _with_env(self, cmd):
@@ -299,6 +303,18 @@ class DockerSandbox(Sandbox):
             timeout=300,
         )
         return result
+
+    def _prewarm_node(self):
+        """Load Claude Code into the Linux page cache by running a no-op invocation.
+
+        Runs in a background thread during boot() so the first agent task doesn't
+        pay the Node.js cold-start penalty (~5-8s).
+        """
+        subprocess.run(
+            ["docker", "exec", "-u", "ftl", self.container_id, "sh", "-c", "claude --version"],
+            capture_output=True,
+            timeout=30,
+        )
 
     def _init_workspace(self, snapshot_id, wipe=False):
         """Populate /workspace from snapshot. If wipe=True, clears it first."""

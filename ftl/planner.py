@@ -59,7 +59,13 @@ def run_test_code(test_code, sandbox, console):
     """Write test code into the sandbox and run it. Returns (exit_code, output)."""
     test_code = _strip_fence(test_code)
 
-    is_js = test_code.strip().startswith(("import ", "const ", "describe(", "test(", "it(", "require("))
+    # Detect JS by unambiguous JS-only signals; "import " alone matches Python too.
+    _js_signals = ("const ", "let ", "var ", "describe(", "it(", "require(")
+    is_js = (
+        test_code.strip().startswith(_js_signals)
+        or "from '" in test_code[:300]
+        or 'from "' in test_code[:300]
+    )
     test_file = "/workspace/_ftl_test." + ("js" if is_js else "py")
 
     sandbox.exec(f"cat > {test_file} << 'FTLEOF'\n{test_code}\nFTLEOF")
