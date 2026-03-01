@@ -41,6 +41,18 @@ class LocalSnapshotStore(SnapshotStore):
         for e in excludes:
             exclude_args += ["--exclude", e]
 
+        # Warn about large files (> 100MB)
+        large_files = []
+        for f in project_path.rglob("*"):
+            if f.is_file() and not any(p in f.parts for p in ignore_set):
+                size_mb = f.stat().st_size / 1_000_000
+                if size_mb > 100:
+                    large_files.append((f.name, int(size_mb)))
+        if large_files:
+            print(f"Warning: {len(large_files)} large file(s) found (add to .ftlignore to exclude):")
+            for name, size in large_files[:3]:
+                print(f"  {name} ({size}MB)")
+
         subprocess.run(
             ["rsync", "-a", "--delete"] + exclude_args +
             [str(project_path) + "/", str(snapshot_path) + "/"],

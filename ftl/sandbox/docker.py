@@ -6,9 +6,15 @@ import threading
 from pathlib import Path
 from ftl.sandbox.base import Sandbox
 
+try:
+    import fcntl
+    _FCNTL_AVAILABLE = True
+except ImportError:
+    _FCNTL_AVAILABLE = False  # Windows fallback — no locking
+
 IMAGE = "ftl-sandbox:latest"
 ENV_FILE = "/tmp/.ftl_env"
-DEFAULT_TIMEOUT = 1800  # 30 minutes
+DEFAULT_TIMEOUT = 3600  # 60 minutes (matches agent timeout)
 
 # Python script run inside the container to compare /workspace against the snapshot.
 # Runs entirely on the Linux side — no host-side Python/VirtioFS overhead per file.
@@ -85,17 +91,29 @@ def _container_file(project_path):
     return container_dir / slug
 
 
+def _container_lock_file(project_path):
+    """Path to the lock file used to serialize container boot for this project."""
+    slug = hashlib.md5(str(project_path).encode()).hexdigest()[:12]
+    container_dir = Path.home() / ".ftl" / "containers"
+    container_dir.mkdir(parents=True, exist_ok=True)
+    return container_dir / f"{slug}.lock"
+
+
 def _check_image_exists():
-    """Check if ftl-sandbox image is built."""
+    """Check Docker is running and the ftl-sandbox image is built."""
     result = subprocess.run(
         ["docker", "images", "-q", IMAGE],
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Docker is not running or not installed. "
+            "Start Docker Desktop and try again."
+        )
     if not result.stdout.strip():
         raise RuntimeError(
-            f"Docker image '{IMAGE}' not found. "
-            f"Run 'docker build -t {IMAGE} .' in the FTL directory."
+            f"Docker image '{IMAGE}' not found. Run 'ftl setup' to build it."
         )
 
 
@@ -131,16 +149,30 @@ class DockerSandbox(Sandbox):
         self._agent_env = agent_env or {}
         self._project_path = str(project_path) if project_path else None
 
-        # 1. Check disk for a persisted container for this project
+        # 1. Check disk for a persisted container for this project.
+        #    Use a file lock so two concurrent sessions for the same project
+        #    can't both claim the same container (race condition).
         existing_id = None
         if self._project_path:
             cfile = _container_file(self._project_path)
-            if cfile.exists():
-                stored = cfile.read_text().strip()
-                if stored and self._is_alive(stored):
-                    existing_id = stored
-                else:
-                    cfile.unlink(missing_ok=True)  # stale reference
+            lock_path = _container_lock_file(self._project_path)
+            lock_fd = open(lock_path, "w")
+            try:
+                if _FCNTL_AVAILABLE:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                if cfile.exists():
+                    stored = cfile.read_text().strip()
+                    if stored and self._is_alive(stored):
+                        existing_id = stored
+                        # Claim it by removing the file — the next caller
+                        # won't see it and will create a fresh container.
+                        cfile.unlink(missing_ok=True)
+                    else:
+                        cfile.unlink(missing_ok=True)  # stale reference
+            finally:
+                if _FCNTL_AVAILABLE:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
 
         # 2. Fall back to in-process standby
         if existing_id is None:

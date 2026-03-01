@@ -41,10 +41,13 @@ def load_config():
     return DEFAULT_CONFIG.copy()
 
 
-def init_config(path=None):
+def init_config(path=None, agent=None, tester=None):
     """Create a .ftlconfig in the given directory."""
     target = Path(path) if path else Path.cwd()
     config_path = target / FTLCONFIG
-    init = {k: DEFAULT_CONFIG[k] for k in ("agent", "tester")}
+    init = {
+        "agent": agent or DEFAULT_CONFIG["agent"],
+        "tester": tester or DEFAULT_CONFIG["tester"],
+    }
     config_path.write_text(json.dumps(init, indent=2))
     return config_path

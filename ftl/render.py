@@ -20,9 +20,10 @@ class AgentRenderer:
         renderer.finish()
     """
 
-    def __init__(self, console):
+    def __init__(self, console, trace_id=None):
         self.console = console
         self._active = None  # {label, t0, stop, thread}
+        self._trace_id = trace_id
 
     def feed(self, line):
         """Process one raw output line from the agent."""
@@ -92,6 +93,10 @@ class AgentRenderer:
         sys.stdout.write("\r\033[K")  # erase the live-counter line
         sys.stdout.flush()
         self.console.print(f"  [dim]◆ {self._active['label']}  {elapsed:.1f}s[/dim]")
+        if self._trace_id:
+            from ftl import cloudwatch
+            cloudwatch.emit(self._trace_id, "tool", self._active["label"],
+                            elapsed_ms=elapsed * 1000)
         self._active = None
 
     def finish(self):

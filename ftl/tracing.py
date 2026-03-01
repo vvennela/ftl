@@ -58,6 +58,7 @@ class StageTimer:
         elapsed = time.time() - self._stage_start
         self._stage_start = time.time()
         self.console.print(f"  [dim]{label}  {elapsed:.1f}s[/dim]")
+        return elapsed
 
 
 class AgentHeartbeat:

@@ -24,88 +24,59 @@ The agent runs entirely inside Docker. It never sees your real API keys or your 
 
 ---
 
-## Prerequisites
+## Getting Started
 
-- **Python 3.11+**
-- **Docker Desktop** (Mac/Windows) or Docker Engine (Linux)
-- **An Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
-- **rsync** — pre-installed on macOS; `apt install rsync` on Linux
+You need **Python 3.11+**, **Docker Desktop** (or Docker Engine on Linux), and an **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com)). On Linux, also install rsync (`apt install rsync`).
 
-For the tester model, you need either an Anthropic API key (direct) or AWS Bedrock access.
-
----
-
-## Installation
+### Step 1 — Install
 
 ```bash
-# 1. Clone the repo
 git clone https://github.com/vvennela/ftl
 cd ftl
-
-# 2. Install the package
 pip install -e .
-
-# 3. Build the sandbox Docker image (one time, ~2 min)
-docker build -t ftl-sandbox .
 ```
 
----
-
-## Setup
-
-### Store your credentials
-
-`ftl auth` writes to `~/.ftl/credentials` (mode 600) and loads automatically on every invocation — no need to `export` on each shell session.
+### Step 2 — Build the sandbox (one time, ~2 min)
 
 ```bash
-# Anthropic API key (required for Claude Code agent)
-ftl auth ANTHROPIC_API_KEY sk-ant-...
-
-# Tester model — pick one:
-ftl auth AWS_BEARER_TOKEN_BEDROCK ABSK...   # AWS Bedrock (recommended)
-# or just use ANTHROPIC_API_KEY for both agent and tester
+ftl setup
 ```
 
-Alternatively, use environment variables or a `.env` file in your project root — FTL reads `.env` automatically for shadow credential generation.
+Checks Docker is running, builds the `ftl-sandbox` image (skipped if already built), and prompts for your Anthropic API key. Credentials are saved to `~/.ftl/credentials` and loaded automatically on every invocation — no need to `export` each session.
 
-### Initialize a project
+### Step 3 — Initialize your project
 
 ```bash
 cd your-project
 ftl init
 ```
 
-This creates `.ftlconfig` in the project root. Edit it to configure your agent and tester:
+Creates `.ftlconfig` with defaults. Edit it to change the agent, tester model, or any other setting.
 
-```json
-{
-  "agent": "claude-code",
-  "tester": "bedrock/us.anthropic.claude-sonnet-4-6"
-}
+### Step 4 — Run a task
+
+```bash
+ftl code 'create a Stripe payment module'   # use single quotes if the task contains $
 ```
+
+FTL snapshots your project, boots the sandbox, runs the agent while generating tests in parallel, then shows you a diff to review:
+
+- `a` — approve and merge changes to your project
+- `r` — reject and discard all changes
+- Any other input — ask the model a question about the diff (e.g. "does this handle null inputs?")
+
+Steps 1–2 are one-time machine setup. Step 3 is once per project.
 
 ---
 
-## Running a Task
+### Adding credentials later
 
 ```bash
-ftl code 'create a Stripe payment module'
+ftl auth ANTHROPIC_API_KEY sk-ant-...
+ftl auth AWS_BEARER_TOKEN_BEDROCK ABSK...   # for the Bedrock tester model
 ```
 
-Use single quotes if the task contains `$`.
-
-FTL will:
-1. Snapshot your project
-2. Boot the sandbox (warm reuse if available, fresh container otherwise)
-3. Run the agent while generating tests in parallel
-4. Show live per-tool progress as the agent works
-5. Run the generated tests
-6. Display the diff and prompt for review
-
-At the review prompt:
-- `a` — approve and merge changes to your project
-- `r` — reject and discard all changes
-- Any question — ask the model about the diff (e.g. "does this handle null inputs?")
+Or put them in a `.env` file in your project root — FTL reads it automatically.
 
 ---
 
@@ -144,7 +115,11 @@ Follow-up instructions continue the same agent conversation in the same containe
   "setup": "pip install -r requirements.txt 2>/dev/null; npm install --silent 2>/dev/null; true",
 
   "snapshot_backend": "local",
-  "s3_bucket": "my-ftl-snapshots"
+  "s3_bucket": "my-ftl-snapshots",
+  "cloudwatch_log_group": "/ftl/myproject",
+  "secrets_manager_prefix": "/myproject/prod/",
+  "guardrail_id": "abc123def456",
+  "guardrail_version": "1"
 }
 ```
 
@@ -157,6 +132,10 @@ Follow-up instructions continue the same agent conversation in the same containe
 | `setup` | No | Shell command run once on a **fresh container only**, before the agent starts. Use for installing project dependencies. |
 | `snapshot_backend` | No | `"local"` (default) or `"s3"` |
 | `s3_bucket` | No | S3 bucket name. Required when `snapshot_backend` is `"s3"` |
+| `cloudwatch_log_group` | No | CloudWatch log group for session traces. Created automatically by `ftl config --aws`. |
+| `secrets_manager_prefix` | No | AWS Secrets Manager prefix (e.g. `"/myproject/prod/"`). When set, replaces `.env` as the secrets source. |
+| `guardrail_id` | No | Bedrock Guardrail ID. When set, replaces the local credential linter — hard-blocks merge if the guardrail intervenes. |
+| `guardrail_version` | No | Guardrail version to apply (default: `"DRAFT"`). Set automatically by `ftl config --aws`. |
 
 ### Choosing a tester model
 
@@ -224,9 +203,18 @@ HTTPS traffic is handled via MITM using a per-session ephemeral CA installed in 
 
 ---
 
-## AWS Setup (S3 Snapshots)
+## AWS Setup
 
-Store snapshots in S3 for durability and cross-machine access:
+FTL has four independently configurable AWS-backed capabilities. You can use any combination by editing `.ftlconfig` directly, or let `ftl config --aws` provision everything at once.
+
+| Capability | Local (default) | AWS mode |
+|---|---|---|
+| Snapshots | rsync to `~/.ftl/snapshots/` | S3 |
+| Traces | `~/.ftl/logs.jsonl` | CloudWatch |
+| Secrets | Read from `.env` | Secrets Manager |
+| Diff safety | Local credential linter | Bedrock Guardrails |
+
+### Prerequisites
 
 ```bash
 pip install -e ".[aws]"
@@ -249,18 +237,66 @@ ftl auth AWS_SECRET_ACCESS_KEY ...
 ftl auth AWS_DEFAULT_REGION us-east-1
 ```
 
-Add to `.ftlconfig`:
+### One-shot wizard
+
+```bash
+ftl config --aws
+```
+
+This provisions all four AWS resources and writes the config in one step:
+
+1. Reads your account ID and region via STS
+2. Creates S3 bucket `ftl-<account>-<region>` (idempotent)
+3. Creates CloudWatch log group `/ftl/<project-name>` (idempotent)
+4. Creates a Bedrock Guardrail `ftl-<project-name>` with PII and credential blocking
+5. Prompts for an optional Secrets Manager prefix
+6. Merges all new keys into your `.ftlconfig`
+
+Run it again at any time — it will not duplicate existing resources.
+
+### S3 Snapshots
+
+Snapshots are stored as gzipped tarballs at `s3://<bucket>/snapshots/<project-hash>/<id>.tar.gz`. The local cache at `~/.ftl/snapshots/` is kept so the Docker container can mount snapshots without a per-task S3 download.
+
+To configure manually, add to `.ftlconfig`:
 
 ```json
 {
-  "agent": "claude-code",
-  "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
   "snapshot_backend": "s3",
   "s3_bucket": "my-ftl-snapshots"
 }
 ```
 
-Snapshots are stored as gzipped tarballs at `s3://<bucket>/snapshots/<project-hash>/<id>.tar.gz`. The local cache at `~/.ftl/snapshots/` is kept so the Docker container can mount snapshots without a per-task S3 download.
+### Secrets Manager
+
+When `secrets_manager_prefix` is set, FTL fetches secrets from AWS Secrets Manager instead of reading `.env`. Secrets are loaded at session start, shadow values are generated from them, and the credential-swap proxy works identically from that point.
+
+```json
+{ "secrets_manager_prefix": "/myproject/prod/" }
+```
+
+Secrets with JSON object values (e.g. `{"API_KEY": "...", "DB_PASSWORD": "..."}`) are expanded into individual keys. Plain-string secrets use the last path segment as the key name, uppercased.
+
+### Bedrock Guardrails
+
+When `guardrail_id` is set, FTL applies a Bedrock Guardrail to the full diff text before the human review step, replacing the local credential linter.
+
+```json
+{
+  "guardrail_id": "abc123def456",
+  "guardrail_version": "1"
+}
+```
+
+If the guardrail intervenes (e.g. detects an AWS key, API token, or PII), the merge is **hard-blocked** and the changes are discarded — no human review prompt. If it passes, review proceeds normally. Findings (PII type, content policy category) are printed before the block decision.
+
+### CloudWatch Tracing
+
+When `cloudwatch_log_group` is set, FTL emits structured JSON events to CloudWatch Logs for each session stage (snapshot, boot, agent, tests).
+
+```json
+{ "cloudwatch_log_group": "/ftl/myproject" }
+```
 
 ---
 
@@ -313,9 +349,13 @@ Every `litellm.completion()` call (tester, diff review, Q&A) is traced automatic
 ## CLI Reference
 
 ```bash
-ftl init                          # create .ftlconfig in current directory
+ftl setup                         # build sandbox image, save API key (one-time)
+
+ftl init                          # create .ftlconfig (interactive prompts)
 ftl code 'task description'       # run task, review, merge/reject
 ftl                               # interactive shell
+
+ftl config --aws                  # provision AWS resources and write config
 
 ftl snapshots                     # list snapshots for current project
 ftl snapshots --all               # list all snapshots
@@ -342,6 +382,8 @@ FTL/
 │   ├── render.py                # stream-json renderer: per-tool live counters
 │   ├── diff.py                  # Diff computation, display, interactive review with LLM Q&A
 │   ├── lint.py                  # Credential leak detection on diffs
+│   ├── secrets.py               # AWS Secrets Manager loader (replaces .env in AWS mode)
+│   ├── guardrails.py            # Bedrock Guardrail apply (replaces lint in AWS mode)
 │   ├── tracing.py               # Langfuse tracing, StageTimer, AgentHeartbeat
 │   ├── config.py                # .ftlconfig loader (git-style directory walk)
 │   ├── credentials.py           # Shadow credential generation, ~/.ftl/credentials store
@@ -401,6 +443,11 @@ Each action is dispatched in sequence. Coding tasks go through the full FTL sand
 - Credential linter — flags hardcoded shadow values in diffs before merge
 - HTTP/HTTPS credential-swap proxy (MITM, ephemeral CA, shadow→real at network layer)
 - Session audit log
+- AWS Secrets Manager integration — replaces `.env` as secrets source in AWS mode
+- Bedrock Guardrails integration — hard-blocks merge on detected secrets or PII
+- `ftl config --aws` one-shot wizard — provisions S3, CloudWatch, Guardrail, prompts for SM prefix
+- CloudWatch session tracing
+- `ftl setup` — one-command onboarding: Docker check, image build, API key prompt
 
 **Next:**
 - Tool dispatch layer — planner routes between coding, email, Slack, GitHub

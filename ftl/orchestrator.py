@@ -3,10 +3,13 @@ import platform
 import shutil
 import subprocess
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from rich.console import Console
 
+from ftl import cloudwatch
 from ftl.config import load_config, find_config
 from ftl.credentials import build_shadow_map
 from ftl.log import write_log
@@ -98,6 +101,7 @@ class Session:
 
         self.agent_name = self.config.get("agent", "claude-code")
         self.tester = self.config.get("tester", "bedrock/us.anthropic.claude-sonnet-4-6")
+        self.trace_id = uuid.uuid4().hex[:8]
 
         self.sandbox = None
         self.agent = None
@@ -114,19 +118,42 @@ class Session:
         """Start a new coding session: snapshot → sandbox → agent ∥ test-gen → run tests → diff."""
         timer = StageTimer(self.console)
 
+        # Init CloudWatch tracing (no-op if not configured or boto3 absent)
+        log_group = self.config.get("cloudwatch_log_group", "")
+        log_stream = f"{datetime.now().strftime('%Y/%m/%d')}/{self.trace_id}"
+        cloudwatch.init(log_group, log_stream)
+        cloudwatch.emit(self.trace_id, "session", "start",
+                        task=task, project=self.project_path, agent=self.agent_name)
+
         # 1. Snapshot
         self.console.print("[bold]Snapshotting project...[/bold]")
         snapshot_store = create_snapshot_store(self.config)
         self.snapshot_id = snapshot_store.create(self.project_path)
         self.snapshot_path = str(Path.home() / ".ftl" / "snapshots" / self.snapshot_id)
         self.console.print(f"  Snapshot: {self.snapshot_id}")
-        timer.mark("snapshot")
+        elapsed = timer.mark("snapshot")
+        cloudwatch.emit(self.trace_id, "stage", "snapshot", elapsed_ms=elapsed * 1000)
 
         # 2. Shadow credentials + proxy
-        extra_vars = self.config.get("shadow_env", [])
-        self.shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
-        if self.shadow_env:
-            self.console.print(f"  Shadow credentials: {len(self.shadow_env)} keys injected")
+        sm_prefix = self.config.get("secrets_manager_prefix", "")
+        if sm_prefix:
+            # AWS mode: Secrets Manager replaces .env
+            from ftl.secrets import load_from_secrets_manager
+            from ftl.credentials import generate_shadow_key
+            sm_secrets = load_from_secrets_manager(sm_prefix)
+            self.shadow_env, swap_table = {}, {}
+            for name, real_value in sm_secrets.items():
+                shadow_value = generate_shadow_key(name)
+                self.shadow_env[name] = shadow_value
+                swap_table[shadow_value] = real_value
+            if sm_secrets:
+                self.console.print(f"  Secrets Manager: {len(sm_secrets)} secrets loaded")
+        else:
+            # Local mode: read .env as before
+            extra_vars = self.config.get("shadow_env", [])
+            self.shadow_env, swap_table = build_shadow_map(self.project_path, extra_vars)
+            if self.shadow_env:
+                self.console.print(f"  Shadow credentials: {len(self.shadow_env)} keys injected")
 
         # Start credential-swap proxy (requires cryptography; silently skipped if absent)
         self._proxy = _try_start_proxy(swap_table)
@@ -134,9 +161,24 @@ class Session:
             self.console.print(
                 f"  Proxy: credential swap active on port {self._proxy.port}"
             )
+        elif swap_table:
+            self.console.print(
+                "[yellow]  Warning: credential-swap proxy unavailable "
+                "(install cryptography: pip install -e '.[proxy]'). "
+                "Agent will use shadow values — live API calls may fail.[/yellow]"
+            )
 
         # 3. Agent auth + proxy routing env vars
         agent_env = _collect_agent_env(self.agent_name, self.config)
+
+        # Validate agent credentials before spending time on sandbox boot
+        if self.agent_name == "claude-code" and "ANTHROPIC_API_KEY" not in agent_env:
+            self.console.print(
+                "[bold red]ANTHROPIC_API_KEY is not set.[/bold red]\n"
+                "  Run: ftl auth ANTHROPIC_API_KEY sk-ant-..."
+            )
+            raise SystemExit(1)
+
         if self._proxy:
             agent_env.update(self._proxy.env_vars())
         if agent_env:
@@ -167,7 +209,8 @@ class Session:
             f"  Sandbox ready"
             f"  [dim]({'fresh' if self.sandbox.fresh else 'warm'} container)[/dim]"
         )
-        timer.mark("boot")
+        elapsed = timer.mark("boot")
+        cloudwatch.emit(self.trace_id, "stage", "boot", elapsed_ms=elapsed * 1000)
 
         # 5. Run agent + generate tests in parallel.
         #    Tests generate while the agent codes; when the agent finishes the
@@ -178,7 +221,7 @@ class Session:
         )
 
         heartbeat = AgentHeartbeat(self.console)
-        renderer = AgentRenderer(self.console)
+        renderer = AgentRenderer(self.console, trace_id=self.trace_id)
 
         def _run_agent():
             heartbeat.start()
@@ -200,7 +243,8 @@ class Session:
             self.console.print(f"[yellow]  Agent error: {e}[/yellow]")
 
         self.agent_calls = 1
-        timer.mark("agent")
+        elapsed = timer.mark("agent")
+        cloudwatch.emit(self.trace_id, "stage", "agent", elapsed_ms=elapsed * 1000)
 
         # 6. Run tests — generation was parallel so test_future is usually
         #    already done by the time the agent finishes.
@@ -208,7 +252,8 @@ class Session:
         if test_code:
             self.console.print("[bold]Running tests...[/bold]")
             run_test_code(test_code, self.sandbox, self.console)
-            timer.mark("tests")
+            elapsed = timer.mark("tests")
+            cloudwatch.emit(self.trace_id, "stage", "tests", elapsed_ms=elapsed * 1000)
 
         self.task = task
 
@@ -218,7 +263,7 @@ class Session:
             "snapshot": self.snapshot_id,
             "project": self.project_path,
             "agent": self.agent_name,
-        })
+        }, trace_id=self.trace_id)
 
     def _get_diffs(self):
         """Return diffs, computing lazily on first call."""
@@ -234,7 +279,7 @@ class Session:
 
         self.console.print(f"[bold cyan]  → Agent: {message}[/bold cyan]")
 
-        renderer = AgentRenderer(self.console)
+        renderer = AgentRenderer(self.console, trace_id=self.trace_id)
         self.agent.continue_run(message, "/workspace", self.sandbox, callback=renderer.feed)
         renderer.finish()
         self.agent_calls += 1
@@ -263,13 +308,34 @@ class Session:
             self._cleanup()
             return
 
-        violations = lint_diffs(diffs, self.shadow_env)
-        display_violations(violations)
-        if violations:
-            self.console.print(
-                "[bold yellow]Credential violations detected. "
-                "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
+        guardrail_id = self.config.get("guardrail_id", "")
+        if guardrail_id:
+            # AWS mode: Bedrock Guardrails replaces local lint
+            from ftl.guardrails import apply_guardrail
+            from ftl.diff import diff_to_text
+            blocked, gr_findings = apply_guardrail(
+                guardrail_id,
+                self.config.get("guardrail_version", "DRAFT"),
+                diff_to_text(diffs),
             )
+            if gr_findings:
+                self.console.print("[bold red]Bedrock Guardrail findings:[/bold red]")
+                for f in gr_findings:
+                    self.console.print(f"  [red]• {f}[/red]")
+            if blocked:
+                self.console.print("[bold red]Guardrail blocked merge. Changes discarded.[/bold red]")
+                self._cleanup()
+                return
+            violations = []  # no local lint when guardrail active
+        else:
+            # Local mode: existing lint scan
+            violations = lint_diffs(diffs, self.shadow_env)
+            display_violations(violations)
+            if violations:
+                self.console.print(
+                    "[bold yellow]Credential violations detected. "
+                    "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
+                )
 
         planner_model = self.config.get("planner_model", self.tester)
         approved = review_diff(diffs, planner_model)
@@ -286,7 +352,7 @@ class Session:
                 "result": "merged",
                 "files_changed": len(diffs),
                 "lint_violations": len(violations),
-            })
+            }, trace_id=self.trace_id)
         else:
             self.console.print("[bold red]Rejected. Changes discarded.[/bold red]")
             write_log({
@@ -295,7 +361,7 @@ class Session:
                 "snapshot": self.snapshot_id,
                 "project": self.project_path,
                 "result": "rejected",
-            })
+            }, trace_id=self.trace_id)
 
         self._cleanup()
 
@@ -308,7 +374,7 @@ class Session:
             "snapshot": self.snapshot_id,
             "project": self.project_path,
             "result": "rejected",
-        })
+        }, trace_id=self.trace_id)
         self._cleanup()
 
     def _cleanup(self):

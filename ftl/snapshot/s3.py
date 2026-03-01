@@ -86,7 +86,16 @@ class S3SnapshotStore(SnapshotStore):
         # Upload tarball to S3 — project path encoded in key name, no metadata needed
         s3_key = self._key(project_path, snapshot_id)
         tarball = self._make_tarball(local_path)
-        self._s3.put_object(Bucket=self.bucket, Key=s3_key, Body=tarball)
+        try:
+            self._s3.put_object(Bucket=self.bucket, Key=s3_key, Body=tarball)
+        except Exception as e:
+            error_code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code", "")
+            if error_code == "NoSuchBucket":
+                raise RuntimeError(
+                    f"S3 bucket '{self.bucket}' does not exist. "
+                    "Create it first or run 'ftl config --aws'."
+                ) from e
+            raise
 
         return snapshot_id
 

@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -6,7 +8,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 from ftl.config import load_config, init_config, find_config
-from ftl.credentials import load_ftl_credentials, save_ftl_credential
+from ftl.credentials import load_ftl_credentials, save_ftl_credential, FTL_CREDENTIALS_FILE
 from ftl.log import LOGS_FILE
 from ftl.orchestrator import run_task, Session
 
@@ -23,7 +25,7 @@ def main(ctx):
 
 @main.command()
 def init():
-    """Initialize FTL in the current project. Creates .ftlconfig."""
+    """Initialize FTL in the current project. Creates .ftlconfig with defaults."""
     if find_config():
         click.echo(".ftlconfig already exists.")
         return
@@ -55,7 +57,6 @@ def code(task):
     if not find_config():
         click.echo("No .ftlconfig found. Run 'ftl init' first.")
         raise SystemExit(1)
-
     run_task(task)
 
 
@@ -208,6 +209,220 @@ def logs(limit, show_all):
         )
 
     console.print(table)
+
+
+def _check_api_key_configured():
+    """Return True if ANTHROPIC_API_KEY is in env or ~/.ftl/credentials."""
+    if "ANTHROPIC_API_KEY" in os.environ:
+        return True
+    if FTL_CREDENTIALS_FILE.exists():
+        for line in FTL_CREDENTIALS_FILE.read_text().splitlines():
+            if line.startswith("ANTHROPIC_API_KEY="):
+                return True
+    return False
+
+
+def _build_image(console):
+    """Build the ftl-sandbox Docker image from the bundled Dockerfile."""
+    dockerfile_dir = Path(__file__).parent.parent
+    dockerfile = dockerfile_dir / "Dockerfile"
+    if not dockerfile.exists():
+        console.print("[red]Dockerfile not found.[/red]")
+        console.print(f"  Expected at: {dockerfile}")
+        console.print("  Run manually from the FTL repo root: docker build -t ftl-sandbox .")
+        raise SystemExit(1)
+
+    console.print("[bold]Building ftl-sandbox image (~2 min)...[/bold]")
+    result = subprocess.run(
+        ["docker", "build", "-t", "ftl-sandbox", str(dockerfile_dir)],
+    )
+    if result.returncode != 0:
+        console.print("[red]Build failed.[/red]")
+        raise SystemExit(1)
+    console.print("  [green]Image built.[/green]")
+
+
+@main.command()
+def setup():
+    """One-command setup: verify Docker, build sandbox image, save API key."""
+    console = Console()
+
+    # 1. Check Docker is running
+    console.print("[bold]Checking Docker...[/bold]")
+    try:
+        subprocess.run(["docker", "info"], capture_output=True, check=True)
+        console.print("  [green]Docker is running.[/green]")
+    except FileNotFoundError:
+        console.print("[red]Docker not found. Install Docker Desktop and try again.[/red]")
+        console.print("  https://docs.docker.com/get-docker/")
+        raise SystemExit(1)
+    except subprocess.CalledProcessError:
+        console.print("[red]Docker is installed but not running. Start Docker Desktop and try again.[/red]")
+        raise SystemExit(1)
+
+    # 2. Check if image already exists, build if not
+    result = subprocess.run(
+        ["docker", "images", "-q", "ftl-sandbox:latest"],
+        capture_output=True, text=True,
+    )
+    if result.stdout.strip():
+        console.print("  [green]ftl-sandbox image already exists. Skipping build.[/green]")
+    else:
+        _build_image(console)
+
+    # 3. Prompt for ANTHROPIC_API_KEY if not configured
+    console.print()
+    if _check_api_key_configured():
+        console.print("  [green]ANTHROPIC_API_KEY already configured.[/green]")
+    else:
+        console.print("[bold]Anthropic API key[/bold]")
+        console.print("  [dim]Get one at https://console.anthropic.com[/dim]")
+        key = click.prompt("  ANTHROPIC_API_KEY", hide_input=True, default="", show_default=False)
+        if key.strip():
+            save_ftl_credential("ANTHROPIC_API_KEY", key.strip())
+            console.print("  [green]Saved to ~/.ftl/credentials[/green]")
+        else:
+            console.print("  [yellow]Skipped. Set it later with: ftl auth ANTHROPIC_API_KEY sk-ant-...[/yellow]")
+
+    # 4. Done
+    console.print()
+    console.print("[bold green]Setup complete.[/bold green]")
+    console.print("  Next: [bold]cd your-project && ftl init && ftl code 'your task'[/bold]")
+
+
+def _configure_aws():
+    """Provision AWS resources and write config for AWS mode."""
+    console = Console()
+
+    try:
+        import boto3
+    except ImportError:
+        console.print("[red]boto3 not installed. Run: pip install -e \".[aws]\"[/red]")
+        raise SystemExit(1)
+
+    # 1. Get account ID and region
+    console.print("[bold]Configuring FTL for AWS...[/bold]")
+    sts = boto3.client("sts")
+    identity = sts.get_caller_identity()
+    account_id = identity["Account"]
+    region = boto3.session.Session().region_name or "us-east-1"
+    console.print(f"  Account: {account_id}  Region: {region}")
+
+    config_path = find_config()
+    if not config_path:
+        console.print("[red]No .ftlconfig found. Run 'ftl init' first.[/red]")
+        raise SystemExit(1)
+    project_name = config_path.parent.name
+
+    # 2. Create S3 bucket (idempotent)
+    bucket_name = f"ftl-{account_id}-{region}"
+    s3 = boto3.client("s3", region_name=region)
+    console.print(f"  S3 bucket: {bucket_name}")
+    try:
+        if region == "us-east-1":
+            s3.create_bucket(Bucket=bucket_name)
+        else:
+            s3.create_bucket(
+                Bucket=bucket_name,
+                CreateBucketConfiguration={"LocationConstraint": region},
+            )
+        console.print("    [green]Created.[/green]")
+    except s3.exceptions.BucketAlreadyOwnedByYou:
+        console.print("    [dim]Already exists.[/dim]")
+    except Exception as e:
+        console.print(f"    [yellow]Warning: {e}[/yellow]")
+
+    # 3. Create CloudWatch log group (idempotent)
+    log_group = f"/ftl/{project_name}"
+    cw = boto3.client("logs", region_name=region)
+    console.print(f"  CloudWatch log group: {log_group}")
+    try:
+        cw.create_log_group(logGroupName=log_group)
+        console.print("    [green]Created.[/green]")
+    except cw.exceptions.ResourceAlreadyExistsException:
+        console.print("    [dim]Already exists.[/dim]")
+
+    # 4. Create Bedrock Guardrail (idempotent)
+    guardrail_name = f"ftl-{project_name}"
+    bedrock = boto3.client("bedrock", region_name=region)
+    console.print(f"  Bedrock Guardrail: {guardrail_name}")
+    guardrail_id = None
+    guardrail_version = "1"
+    try:
+        gr_response = bedrock.create_guardrail(
+            name=guardrail_name,
+            description=f"FTL credential and content safety guardrail for {project_name}",
+            sensitiveInformationPolicyConfig={
+                "piiEntitiesConfig": [
+                    {"type": t, "action": "BLOCK"}
+                    for t in [
+                        "AWS_ACCESS_KEY",
+                        "API_KEY",
+                        "USERNAME",
+                        "PASSWORD",
+                        "EMAIL",
+                        "CREDIT_DEBIT_CARD_NUMBER",
+                    ]
+                ]
+            },
+            blockedInputMessaging="Input blocked by FTL guardrail.",
+            blockedOutputsMessaging="Output blocked by FTL guardrail.",
+        )
+        guardrail_id = gr_response["guardrailId"]
+        ver_response = bedrock.create_guardrail_version(guardrailIdentifier=guardrail_id)
+        guardrail_version = str(ver_response["version"])
+        console.print(f"    [green]Created (id={guardrail_id}, version={guardrail_version}).[/green]")
+    except bedrock.exceptions.ConflictException:
+        # Find existing by name
+        paginator = bedrock.get_paginator("list_guardrails")
+        for page in paginator.paginate():
+            for gr in page.get("guardrails", []):
+                if gr["name"] == guardrail_name:
+                    guardrail_id = gr["id"]
+                    guardrail_version = str(gr.get("version", "1"))
+                    break
+            if guardrail_id:
+                break
+        console.print(f"    [dim]Already exists (id={guardrail_id}).[/dim]")
+
+    # 5. Prompt for optional Secrets Manager prefix
+    sm_prefix = click.prompt(
+        "  Secrets Manager prefix (leave blank to skip)",
+        default="",
+        show_default=False,
+    ).strip()
+
+    # 6. Read existing config, merge new keys, write back
+    existing = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    existing["snapshot_backend"] = "s3"
+    existing["s3_bucket"] = bucket_name
+    existing["cloudwatch_log_group"] = log_group
+    if guardrail_id:
+        existing["guardrail_id"] = guardrail_id
+        existing["guardrail_version"] = guardrail_version
+    if sm_prefix:
+        existing["secrets_manager_prefix"] = sm_prefix
+
+    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    console.print(f"\n[bold green]Done. .ftlconfig updated.[/bold green]")
+    console.print(f"  [dim]{config_path}[/dim]")
+
+
+@main.command("config")
+@click.option("--aws", "aws_mode", is_flag=True,
+              help="Configure FTL to use AWS for snapshots, tracing, secrets, and guardrails.")
+def config_cmd(aws_mode):
+    """Configure FTL settings."""
+    if not aws_mode:
+        click.echo("Usage: ftl config --aws")
+        return
+    _configure_aws()
 
 
 def shell():

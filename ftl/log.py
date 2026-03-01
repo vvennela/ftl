@@ -12,9 +12,12 @@ from pathlib import Path
 LOGS_FILE = Path.home() / ".ftl" / "logs.jsonl"
 
 
-def write_log(entry):
+def write_log(entry, trace_id=None):
     """Append a session log entry."""
     LOGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     entry["timestamp"] = datetime.now().isoformat()
     with open(LOGS_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
+    if trace_id:
+        from ftl import cloudwatch
+        cloudwatch.emit(trace_id, "session", entry.get("event", ""), **entry)
