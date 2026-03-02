@@ -1,6 +1,6 @@
 # FTL
 
-**Zero-trust control plane for AI coding agents.** Run your coding agent inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
+**Zero-trust control plane for AI coding agents.** Run Claude Code inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
 
 ---
 
