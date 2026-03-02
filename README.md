@@ -1,6 +1,18 @@
 # FTL
 
-**Zero-trust control plane for AI coding agents.** Run Claude Code inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
+**Zero-trust control plane for AI coding agents.** Run Claude Code, Codex, Aider, or Kiro inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
+
+---
+
+## Quickstart
+
+```bash
+pip install -e .
+ftl setup          # pull sandbox image, pick agent + tester, save API key
+cd your-project
+ftl init           # create .ftlconfig
+ftl code 'your task here'
+```
 
 ---
 
@@ -16,8 +28,9 @@ ftl code "build login component with Supabase auth"
 3. INJECT        — shadow credentials replace real keys inside sandbox
 4. AGENT ∥ TESTS — coding agent runs; adversarial tests generate in parallel
 5. RUN TESTS     — pre-generated tests execute the moment the agent finishes
-6. DIFF          — computed on demand; file-level review of all changes
-7. APPROVE       — human reviews, asks questions, merges or rejects
+6. LINT          — diff scanned for credentials and dangerous operations
+7. DIFF          — computed on demand; file-level review of all changes
+8. APPROVE       — human reviews, asks questions, merges or rejects
 ```
 
 The agent runs entirely inside Docker. It never sees your real API keys or your host filesystem. Nothing touches your project without explicit approval.
@@ -36,13 +49,40 @@ cd ftl
 pip install -e .
 ```
 
-### Step 2 — Build the sandbox (one time, ~2 min)
+### Step 2 — Setup (one time)
 
 ```bash
 ftl setup
 ```
 
-Checks Docker is running, builds the `ftl-sandbox` image (skipped if already built), and prompts for your Anthropic API key. Credentials are saved to `~/.ftl/credentials` and loaded automatically on every invocation — no need to `export` each session.
+Pulls the sandbox image from Docker Hub, asks which agent and tester model you want, and saves your API key:
+
+```
+Which agent do you want to use?
+  1. Claude Code  (Anthropic, recommended)
+  2. Codex        (OpenAI)
+  3. Aider        (open-source)
+  4. Kiro         (AWS)
+  Choice [1]:
+
+Which model for test generation?
+  1. Anthropic API — claude-haiku  (uses ANTHROPIC_API_KEY)
+  2. AWS Bedrock   — claude-sonnet (uses AWS credentials)
+  3. Skip test generation
+  Choice [1]:
+```
+
+Your choices are saved globally to `~/.ftl/config.json` and used as defaults for every new project. Credentials are saved to `~/.ftl/credentials` and loaded automatically on every invocation — no need to `export` each session.
+
+**Docker Hub images** — pulled automatically based on your agent selection:
+
+```
+vvenne/ftl:latest   — Claude Code
+vvenne/ftl:codex    — Codex
+vvenne/ftl:aider    — Aider
+vvenne/ftl:kiro     — Kiro
+vvenne/ftl:full     — all agents
+```
 
 ### Step 3 — Initialize your project
 
@@ -67,13 +107,12 @@ FTL snapshots your project, boots the sandbox, runs the agent while generating t
 
 Steps 1–2 are one-time machine setup. Step 3 is once per project.
 
----
-
 ### Adding credentials later
 
 ```bash
 ftl auth ANTHROPIC_API_KEY sk-ant-...
-ftl auth AWS_BEARER_TOKEN_BEDROCK ABSK...   # for the Bedrock tester model
+ftl auth OPENAI_API_KEY sk-...
+ftl auth AWS_BEARER_TOKEN_BEDROCK ABSK...
 ```
 
 Or put them in a `.env` file in your project root — FTL reads it automatically.
@@ -100,6 +139,27 @@ Follow-up instructions continue the same agent conversation in the same containe
 
 ---
 
+## Agents
+
+FTL supports four coding agents. Select one during `ftl setup` or set `agent` in `.ftlconfig`.
+
+| Agent | Key | Requires |
+|---|---|---|
+| Claude Code | `"claude-code"` | `ANTHROPIC_API_KEY` |
+| Codex | `"codex"` | `OPENAI_API_KEY` |
+| Aider | `"aider"` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
+| Kiro | `"kiro"` | AWS credentials + browser login |
+
+**Kiro authentication:** Kiro uses browser-based AWS SSO. After your first `ftl code` run, authenticate inside the container:
+
+```bash
+docker exec -it $(docker ps -qf ancestor=ftl-sandbox) kiro-cli login
+```
+
+Credentials persist in the container until it is removed.
+
+---
+
 ## Configuration
 
 `ftl init` creates `.ftlconfig` in your project root. All fields:
@@ -107,7 +167,7 @@ Follow-up instructions continue the same agent conversation in the same containe
 ```json
 {
   "agent": "claude-code",
-  "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
+  "tester": "claude-haiku-4-5-20251001",
 
   "shadow_env": ["MY_EXTRA_SECRET"],
   "agent_env": ["SOME_VAR_TO_FORWARD"],
@@ -125,7 +185,7 @@ Follow-up instructions continue the same agent conversation in the same containe
 
 | Field | Required | Description |
 |---|---|---|
-| `agent` | Yes | Agent to run. `"claude-code"`, `"kiro"`, `"codex"`, or `"aider"` |
+| `agent` | Yes | Agent to run: `"claude-code"`, `"codex"`, `"aider"`, `"kiro"` |
 | `tester` | Yes | LiteLLM model string for adversarial test generation |
 | `shadow_env` | No | Extra env var names to shadow beyond what's in `.env` |
 | `agent_env` | No | Extra env vars from your host to forward into the sandbox (for agent auth) |
@@ -142,12 +202,12 @@ Follow-up instructions continue the same agent conversation in the same containe
 Any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers) works:
 
 ```json
-{ "tester": "bedrock/us.anthropic.claude-sonnet-4-6" }   // AWS Bedrock
-{ "tester": "anthropic/claude-haiku-4-5-20251001" }       // Anthropic direct
-{ "tester": "openai/gpt-4o" }                             // OpenAI
+{ "tester": "claude-haiku-4-5-20251001" }                    // Anthropic direct (default)
+{ "tester": "bedrock/us.anthropic.claude-sonnet-4-6" }        // AWS Bedrock
+{ "tester": "openai/gpt-4o-mini" }                            // OpenAI
 ```
 
-The tester must be a different model than the agent. Bedrock is recommended for cost — it runs the tester in parallel with the agent so latency is free.
+The tester runs in parallel with the agent, so latency is free regardless of model.
 
 ### Project dependencies (setup hook)
 
@@ -155,8 +215,6 @@ If your project requires `pip install` or `npm install`, add a `setup` command. 
 
 ```json
 {
-  "agent": "claude-code",
-  "tester": "bedrock/us.anthropic.claude-sonnet-4-6",
   "setup": "pip install -r requirements.txt 2>/dev/null; npm install --silent 2>/dev/null; true"
 }
 ```
@@ -181,7 +239,13 @@ STRIPE_SECRET_KEY=ftl_shadow_stripe_secret_key_7f8a2b3c
 OPENAI_API_KEY=ftl_shadow_openai_api_key_4d9e2a1f
 ```
 
-The agent writes code using these shadow values. Your real `.env` never enters the container. Before merge, FTL's credential linter scans the diff for hardcoded shadow values and flags them.
+The agent writes code using these shadow values. Your real `.env` never enters the container. Before merge, FTL's lint scanner checks the diff for:
+
+- Hardcoded shadow values or known credential patterns (Stripe, Anthropic, AWS, GitHub, etc.)
+- Dangerous SQL: `DROP TABLE`, `DROP DATABASE`, `TRUNCATE`, `DELETE FROM` without `WHERE`
+- Dangerous shell: `rm -rf`, `shred`, `dd if=`, `chmod -R 777`
+
+All findings are advisory — flagged for your review, never a hard block (unless Bedrock Guardrails is configured).
 
 ### Network Proxy (optional)
 
@@ -324,13 +388,14 @@ Every `litellm.completion()` call (tester, diff review, Q&A) is traced automatic
 ~/.ftl/
 ├── snapshots/<id>/     — project state at task start (rsync, respects .ftlignore)
 ├── containers/<hash>   — persistent container ID per project path
+├── config.json         — global defaults set by ftl setup
 └── credentials         — ftl auth storage (mode 600)
 ```
 
 **Container lifecycle:**
 - Persists across runs, keyed by project path
 - Workspace (`/workspace`) wiped and restored from snapshot on each task
-- Everything outside `/workspace` persists: user-installed packages in `/home/ftl/.local/`, global npm installs, Claude Code's conversation history
+- Everything outside `/workspace` persists: user-installed packages in `/home/ftl/.local/`, global npm installs, agent conversation history
 
 **What persists across tasks in the same container:**
 
@@ -349,9 +414,9 @@ Every `litellm.completion()` call (tester, diff review, Q&A) is traced automatic
 ## CLI Reference
 
 ```bash
-ftl setup                         # build sandbox image, save API key (one-time)
+ftl setup                         # pull sandbox image, choose agent + tester, save API key
 
-ftl init                          # create .ftlconfig (interactive prompts)
+ftl init                          # create .ftlconfig in current project
 ftl code 'task description'       # run task, review, merge/reject
 ftl                               # interactive shell
 
@@ -373,25 +438,29 @@ ftl logs --all                    # across all projects
 
 ```
 FTL/
-├── Dockerfile                   # Debian slim, Node 22, Python 3.11, Claude Code
+├── Dockerfile                   # Base image (Claude Code). Agent tags built on top.
+├── scripts/
+│   └── publish.sh               # Build and push all Docker Hub tag variants
 ├── ftl/
-│   ├── cli.py                   # CLI entry points and interactive shell
+│   ├── cli.py                   # CLI entry points, setup wizard, interactive shell
 │   ├── orchestrator.py          # Session lifecycle: snapshot → boot → agent ∥ tester → merge
 │   ├── planner.py               # Tester: parallel test generation + execution
 │   ├── proxy.py                 # HTTP/HTTPS credential-swap proxy (optional)
 │   ├── render.py                # stream-json renderer: per-tool live counters
 │   ├── diff.py                  # Diff computation, display, interactive review with LLM Q&A
-│   ├── lint.py                  # Credential leak detection on diffs
+│   ├── lint.py                  # Credential + dangerous operation scanner
 │   ├── secrets.py               # AWS Secrets Manager loader (replaces .env in AWS mode)
 │   ├── guardrails.py            # Bedrock Guardrail apply (replaces lint in AWS mode)
 │   ├── tracing.py               # Langfuse tracing, StageTimer, AgentHeartbeat
-│   ├── config.py                # .ftlconfig loader (git-style directory walk)
+│   ├── config.py                # .ftlconfig loader + ~/.ftl/config.json global defaults
 │   ├── credentials.py           # Shadow credential generation, ~/.ftl/credentials store
 │   ├── ignore.py                # Shared ignore rules (ALWAYS_IGNORE + .ftlignore)
 │   ├── log.py                   # Session audit log
 │   ├── agents/
 │   │   ├── base.py              # Abstract agent interface
 │   │   ├── claude_code.py       # Claude Code adapter (stream-json, --verbose)
+│   │   ├── codex.py             # Codex adapter
+│   │   ├── aider.py             # Aider adapter
 │   │   └── kiro.py              # Kiro adapter
 │   ├── sandbox/
 │   │   ├── base.py              # Abstract sandbox interface
@@ -440,14 +509,16 @@ Each action is dispatched in sequence. Coding tasks go through the full FTL sand
 - Live streaming agent output (line-by-line, not blocking until completion)
 - rsync-based snapshots with ignore rules
 - S3 snapshot backend for durability and cross-machine access
-- Credential linter — flags hardcoded shadow values in diffs before merge
+- Credential + dangerous operation linter (DROP TABLE, rm -rf, etc.)
 - HTTP/HTTPS credential-swap proxy (MITM, ephemeral CA, shadow→real at network layer)
 - Session audit log
 - AWS Secrets Manager integration — replaces `.env` as secrets source in AWS mode
 - Bedrock Guardrails integration — hard-blocks merge on detected secrets or PII
 - `ftl config --aws` one-shot wizard — provisions S3, CloudWatch, Guardrail, prompts for SM prefix
 - CloudWatch session tracing
-- `ftl setup` — one-command onboarding: Docker check, image build, API key prompt
+- Multi-agent support: Claude Code, Codex, Aider, Kiro
+- `ftl setup` wizard — agent selection, tester model, Docker Hub pull
+- Published Docker Hub images (`vvenne/ftl:latest`, `:codex`, `:aider`, `:kiro`, `:full`)
 
 **Next:**
 - Tool dispatch layer — planner routes between coding, email, Slack, GitHub
@@ -458,17 +529,6 @@ Each action is dispatched in sequence. Coding tasks go through the full FTL sand
 - Virtualization.framework sandbox (sub-second boot via VM snapshots, no Docker dependency)
 - DynamoDB audit log
 - Multi-agent parallelism — planner fans out independent tasks
-
----
-
-## Rebuilding
-
-Required after pulling changes that touch the Dockerfile:
-
-```bash
-pip install -e .
-docker build -t ftl-sandbox .
-```
 
 ---
 

@@ -15,8 +15,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm cache clean --force
 
-# TypeScript + React tooling + Claude Code + Codex + Jest
-RUN npm install -g typescript ts-node create-react-app @anthropic-ai/claude-code @openai/codex jest \
+# TypeScript + React tooling + Claude Code + Jest (base image — agents added by ftl setup)
+RUN npm install -g typescript ts-node create-react-app @anthropic-ai/claude-code jest \
     && npm cache clean --force
 
 # Python 3.11 (ships with bookworm) + pip + venv
@@ -37,8 +37,7 @@ RUN pip3 install --break-system-packages \
     openai \
     anthropic \
     python-dotenv \
-    pydantic \
-    aider-chat
+    pydantic
 
 # Strip unnecessary files
 RUN find /usr -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; \

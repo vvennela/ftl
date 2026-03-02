@@ -34,8 +34,8 @@ DANGEROUS_SQL_PATTERNS = [
     (re.compile(r"\bDROP\s+SCHEMA\b", re.IGNORECASE),   "Dangerous SQL: DROP SCHEMA"),
     (re.compile(r"\bTRUNCATE\s+TABLE\b", re.IGNORECASE),"Dangerous SQL: TRUNCATE TABLE"),
     (re.compile(r"\bTRUNCATE\b", re.IGNORECASE),         "Dangerous SQL: TRUNCATE"),
-    # DELETE FROM without a trailing WHERE — matches end-of-statement patterns
-    (re.compile(r"\bDELETE\s+FROM\s+\w[\w.]*\s*(?:;|$)", re.IGNORECASE),
+    # DELETE FROM without WHERE anywhere on the same line
+    (re.compile(r"\bDELETE\s+FROM\b(?!.*\bWHERE\b)", re.IGNORECASE),
      "Dangerous SQL: DELETE without WHERE"),
 ]
 

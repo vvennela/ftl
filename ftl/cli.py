@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.table import Table
-from ftl.config import load_config, init_config, find_config
+from ftl.config import load_config, init_config, find_config, save_global_config
 from ftl.credentials import load_ftl_credentials, save_ftl_credential, FTL_CREDENTIALS_FILE
 from ftl.log import LOGS_FILE
 from ftl.orchestrator import run_task, Session
@@ -222,29 +222,96 @@ def _check_api_key_configured():
     return False
 
 
-def _build_image(console):
-    """Build the ftl-sandbox Docker image from the bundled Dockerfile."""
+_REGISTRY = "vvenne/ftl"
+
+# Agent choices for the setup wizard.
+# (number, label, docker_hub_tag, agent_config_key, [local_fallback_snippets])
+_AGENT_CHOICES = [
+    ("1", "Claude Code  (Anthropic, recommended)", "latest", "claude-code", []),
+    ("2", "Codex        (OpenAI)",                 "codex",  "codex",       ["codex"]),
+    ("3", "Aider        (open-source)",             "aider",  "aider",       ["aider"]),
+    ("4", "Kiro         (AWS)",                     "kiro",   "kiro",        ["kiro"]),
+]
+
+# Dockerfile snippets for local fallback builds. Architecture-aware where needed.
+_AGENT_SNIPPETS = {
+    "codex": "RUN npm install -g @openai/codex && npm cache clean --force",
+    "aider": "RUN pip3 install --break-system-packages aider-chat",
+    "kiro": (
+        "RUN apt-get update && apt-get install -y --no-install-recommends unzip"
+        " && ARCH=$(uname -m)"
+        " && if [ \"$ARCH\" = \"x86_64\" ]; then"
+        "   curl -fsSL https://desktop-release.q.us-east-1.amazonaws.com/latest/kiro-cli.deb -o /tmp/kiro-cli.deb"
+        "   && dpkg -i /tmp/kiro-cli.deb && apt-get install -f -y --no-install-recommends"
+        "   && rm -f /tmp/kiro-cli.deb;"
+        " elif [ \"$ARCH\" = \"aarch64\" ]; then"
+        "   curl -fsSL https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux.zip -o /tmp/kiro.zip"
+        "   && unzip /tmp/kiro.zip -d /tmp/kiro-extract"
+        "   && if [ -f /tmp/kiro-extract/install.sh ]; then PREFIX=/usr/local bash /tmp/kiro-extract/install.sh;"
+        "   else find /tmp/kiro-extract -type f -name kiro-cli -exec install -m755 {} /usr/local/bin/kiro-cli \\;; fi"
+        "   && rm -rf /tmp/kiro.zip /tmp/kiro-extract;"
+        " fi"
+        " && rm -rf /var/lib/apt/lists/*"
+    ),
+}
+
+# Tester model choices for the setup wizard.
+# (number, label, litellm_model_string)
+_TESTER_CHOICES = [
+    ("1", "Anthropic API — claude-haiku  (uses ANTHROPIC_API_KEY)", "claude-haiku-4-5-20251001"),
+    ("2", "AWS Bedrock   — claude-sonnet (uses AWS credentials)",    "bedrock/us.anthropic.claude-sonnet-4-6"),
+    ("3", "Skip test generation",                                    ""),
+]
+
+
+def _pull_or_build(console, hub_tag, local_agents):
+    """Pull ftlhq/ftl-sandbox:<hub_tag> from Docker Hub, tag as ftl-sandbox locally.
+    Falls back to a local build (base Dockerfile + agent layers) if pull fails.
+    """
+    import tempfile
+
+    hub_image = f"{_REGISTRY}:{hub_tag}"
+    console.print(f"  Pulling {hub_image}...")
+    pull = subprocess.run(["docker", "pull", hub_image], capture_output=True)
+    if pull.returncode == 0:
+        subprocess.run(["docker", "tag", hub_image, "ftl-sandbox"], check=True)
+        console.print("  [green]Pulled.[/green]")
+        return
+
+    console.print("  [dim]Hub pull failed — building locally (one-time)...[/dim]")
     dockerfile_dir = Path(__file__).parent.parent
-    dockerfile = dockerfile_dir / "Dockerfile"
-    if not dockerfile.exists():
-        console.print("[red]Dockerfile not found.[/red]")
-        console.print(f"  Expected at: {dockerfile}")
-        console.print("  Run manually from the FTL repo root: docker build -t ftl-sandbox .")
+    result = subprocess.run(["docker", "build", "-t", "ftl-sandbox-base", str(dockerfile_dir)])
+    if result.returncode != 0:
+        console.print("[red]Base image build failed.[/red]")
         raise SystemExit(1)
 
-    console.print("[bold]Building ftl-sandbox image (~2 min)...[/bold]")
-    result = subprocess.run(
-        ["docker", "build", "-t", "ftl-sandbox", str(dockerfile_dir)],
-    )
-    if result.returncode != 0:
-        console.print("[red]Build failed.[/red]")
-        raise SystemExit(1)
-    console.print("  [green]Image built.[/green]")
+    if not local_agents:
+        subprocess.run(["docker", "tag", "ftl-sandbox-base", "ftl-sandbox"], check=True)
+        console.print("  [green]Image ready.[/green]")
+        return
+
+    snippets = "\n".join(_AGENT_SNIPPETS[a] for a in local_agents if a in _AGENT_SNIPPETS)
+    dockerfile_content = f"FROM ftl-sandbox-base\nUSER root\n{snippets}\nUSER ftl\n"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dockerfile", delete=False) as f:
+        f.write(dockerfile_content)
+        tmp_path = Path(f.name)
+    try:
+        result = subprocess.run(
+            ["docker", "build", "-t", "ftl-sandbox", "-f", str(tmp_path), str(tmp_path.parent)],
+        )
+        if result.returncode != 0:
+            console.print("[red]Agent layer build failed.[/red]")
+            raise SystemExit(1)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    console.print("  [green]Image ready.[/green]")
 
 
 @main.command()
 def setup():
-    """One-command setup: verify Docker, build sandbox image, save API key."""
+    """One-command setup: choose agents + tester model, pull sandbox image, save API key."""
     console = Console()
 
     # 1. Check Docker is running
@@ -260,17 +327,60 @@ def setup():
         console.print("[red]Docker is installed but not running. Start Docker Desktop and try again.[/red]")
         raise SystemExit(1)
 
-    # 2. Check if image already exists, build if not
-    result = subprocess.run(
-        ["docker", "images", "-q", "ftl-sandbox:latest"],
-        capture_output=True, text=True,
+    # 2. Agent selection
+    console.print()
+    image_exists = bool(
+        subprocess.run(
+            ["docker", "images", "-q", "ftl-sandbox:latest"],
+            capture_output=True, text=True,
+        ).stdout.strip()
     )
-    if result.stdout.strip():
-        console.print("  [green]ftl-sandbox image already exists. Skipping build.[/green]")
-    else:
-        _build_image(console)
 
-    # 3. Prompt for ANTHROPIC_API_KEY if not configured
+    chosen_agent_key = None
+    chosen_kiro = False
+
+    if image_exists and not click.confirm(
+        "  ftl-sandbox image already exists. Reconfigure?", default=False
+    ):
+        console.print("  [dim]Skipping image setup.[/dim]")
+    else:
+        console.print()
+        console.print("[bold]Which agent do you want to use?[/bold]")
+        for num, label, _, _, _ in _AGENT_CHOICES:
+            console.print(f"  {num}. {label}")
+        console.print()
+        choice = click.prompt("  Choice", default="1").strip()
+        matched = next((c for c in _AGENT_CHOICES if c[0] == choice), _AGENT_CHOICES[0])
+        _, _, chosen_tag, chosen_agent_key, chosen_local_agents = matched
+        chosen_kiro = chosen_agent_key == "kiro"
+        console.print()
+        _pull_or_build(console, chosen_tag, chosen_local_agents)
+        save_global_config({"agent": chosen_agent_key})
+
+    # 3. Tester model selection
+    console.print()
+    console.print("[bold]Which model for test generation?[/bold]")
+    for num, label, _ in _TESTER_CHOICES:
+        console.print(f"  {num}. {label}")
+    console.print()
+    tester_choice = click.prompt("  Choice", default="1").strip()
+    matched_tester = next((t for t in _TESTER_CHOICES if t[0] == tester_choice), _TESTER_CHOICES[0])
+    tester_model = matched_tester[2]
+    save_global_config({"tester": tester_model} if tester_model else {"tester": ""})
+    console.print(f"  [green]Tester: {matched_tester[1]}[/green]")
+
+    # 4. Kiro authentication note
+    if chosen_kiro or chosen_agent_key == "kiro":
+        console.print()
+        console.print("[bold]Kiro authentication[/bold]")
+        console.print(
+            "  Kiro uses browser-based login. After your first [bold]ftl code[/bold] run,\n"
+            "  authenticate with:\n"
+            "  [dim]docker exec -it $(docker ps -qf ancestor=ftl-sandbox) kiro-cli login[/dim]"
+        )
+        console.print("  [dim]Credentials persist in the container until it is removed.[/dim]")
+
+    # 5. Anthropic API key
     console.print()
     if _check_api_key_configured():
         console.print("  [green]ANTHROPIC_API_KEY already configured.[/green]")
@@ -282,9 +392,9 @@ def setup():
             save_ftl_credential("ANTHROPIC_API_KEY", key.strip())
             console.print("  [green]Saved to ~/.ftl/credentials[/green]")
         else:
-            console.print("  [yellow]Skipped. Set it later with: ftl auth ANTHROPIC_API_KEY sk-ant-...[/yellow]")
+            console.print("  [yellow]Skipped. Set later: ftl auth ANTHROPIC_API_KEY sk-ant-...[/yellow]")
 
-    # 4. Done
+    # 6. Done
     console.print()
     console.print("[bold green]Setup complete.[/bold green]")
     console.print("  Next: [bold]cd your-project && ftl init && ftl code 'your task'[/bold]")
