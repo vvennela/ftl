@@ -1,9 +1,13 @@
 from ftl.agents.claude_code import ClaudeCodeAgent
 from ftl.agents.kiro import KiroAgent
+from ftl.agents.codex import CodexAgent
+from ftl.agents.aider import AiderAgent
 
 AGENTS = {
     "claude-code": ClaudeCodeAgent,
     "kiro": KiroAgent,
+    "codex": CodexAgent,
+    "aider": AiderAgent,
 }
 
 

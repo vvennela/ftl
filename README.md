@@ -125,7 +125,7 @@ Follow-up instructions continue the same agent conversation in the same containe
 
 | Field | Required | Description |
 |---|---|---|
-| `agent` | Yes | Agent to run. `"claude-code"` or `"kiro"` |
+| `agent` | Yes | Agent to run. `"claude-code"`, `"kiro"`, `"codex"`, or `"aider"` |
 | `tester` | Yes | LiteLLM model string for adversarial test generation |
 | `shadow_env` | No | Extra env var names to shadow beyond what's in `.env` |
 | `agent_env` | No | Extra env vars from your host to forward into the sandbox (for agent auth) |

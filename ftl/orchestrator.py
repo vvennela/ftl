@@ -45,6 +45,14 @@ def _try_start_proxy(swap_table):
 AGENT_AUTH_VARS = {
     "claude-code": ["ANTHROPIC_API_KEY"],
     "kiro": ["KIRO_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"],
+    "codex": ["OPENAI_API_KEY"],
+    "aider": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],  # model-dependent
+}
+
+# Required key per agent — checked before sandbox boot to fail fast.
+AGENT_REQUIRED_KEY = {
+    "claude-code": "ANTHROPIC_API_KEY",
+    "codex": "OPENAI_API_KEY",
 }
 
 
@@ -172,12 +180,22 @@ class Session:
         agent_env = _collect_agent_env(self.agent_name, self.config)
 
         # Validate agent credentials before spending time on sandbox boot
-        if self.agent_name == "claude-code" and "ANTHROPIC_API_KEY" not in agent_env:
+        required_key = AGENT_REQUIRED_KEY.get(self.agent_name)
+        if required_key and required_key not in agent_env:
             self.console.print(
-                "[bold red]ANTHROPIC_API_KEY is not set.[/bold red]\n"
-                "  Run: ftl auth ANTHROPIC_API_KEY sk-ant-..."
+                f"[bold red]{required_key} is not set.[/bold red]\n"
+                f"  Run: ftl auth {required_key} <your-key>"
             )
             raise SystemExit(1)
+        
+        # Aider requires at least one model key
+        if self.agent_name == "aider":
+            if not any(k in agent_env for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]):
+                self.console.print(
+                    "[bold red]Aider requires OPENAI_API_KEY or ANTHROPIC_API_KEY[/bold red]\n"
+                    "  Run: ftl auth OPENAI_API_KEY <your-key>"
+                )
+                raise SystemExit(1)
 
         if self._proxy:
             agent_env.update(self._proxy.env_vars())
