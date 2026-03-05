@@ -1,6 +1,9 @@
 import json
 import os
 import subprocess
+
+# Suppress LiteLLM's startup banner and verbose stderr before any import triggers it
+os.environ.setdefault("LITELLM_LOG", "ERROR")
 from datetime import datetime
 from pathlib import Path
 

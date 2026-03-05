@@ -1,6 +1,6 @@
 # FTL
 
-**Zero-trust control plane for AI coding agents.** Run Claude Code, Codex, Aider, or Kiro inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
+**Zero-trust control plane for AI coding agents.** Run Claude Code, Codex, or Aider inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
 
 ---
 
@@ -64,7 +64,6 @@ Which agent do you want to use?
   1. Claude Code  (Anthropic, recommended)
   2. Codex        (OpenAI)
   3. Aider        (open-source)
-  4. Kiro         (AWS)
   Choice [1]:
 
 Which model for test generation?
@@ -82,8 +81,6 @@ Your choices are saved globally to `~/.ftl/config.json` and used as defaults for
 vvenne/ftl:latest   — Claude Code
 vvenne/ftl:codex    — Codex
 vvenne/ftl:aider    — Aider
-vvenne/ftl:kiro     — Kiro
-vvenne/ftl:full     — all agents
 ```
 
 ### Step 3 — Initialize your project
@@ -170,24 +167,13 @@ Follow-up instructions continue the same agent conversation in the same containe
 
 ## Agents
 
-FTL supports four coding agents. Select one during `ftl setup` or set `agent` in `.ftlconfig`.
+FTL supports three coding agents. Select one during `ftl setup` or set `agent` in `.ftlconfig`.
 
 | Agent | Key | Requires |
 |---|---|---|
 | Claude Code | `"claude-code"` | `ANTHROPIC_API_KEY` |
 | Codex | `"codex"` | `OPENAI_API_KEY` |
 | Aider | `"aider"` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
-| Kiro | `"kiro"` | AWS credentials + browser login |
-
-**Kiro authentication:** If `~/.aws/credentials` exists on your host, FTL automatically mounts it into the container at `/home/ftl/.aws` — kiro-cli will use those credentials without any extra setup.
-
-If you don't have a credentials file, authenticate manually after the first boot:
-
-```bash
-docker exec -it <container_id> kiro-cli login --use-device-flow
-```
-
-`docker ps --filter ancestor=vvenne/ftl:kiro` shows the container ID. Credentials persist in the container until it is removed.
 
 ---
 
@@ -217,7 +203,7 @@ docker exec -it <container_id> kiro-cli login --use-device-flow
 
 | Field | Default | Description |
 |---|---|---|
-| `agent` | `"claude-code"` | Agent to run: `"claude-code"`, `"codex"`, `"aider"`, `"kiro"` |
+| `agent` | `"claude-code"` | Agent to run: `"claude-code"`, `"codex"`, `"aider"` |
 | `tester` | `"claude-haiku-4-5-20251001"` | LiteLLM model string for adversarial test generation |
 | `reviewer` | `"claude-haiku-4-5-20251001"` | LiteLLM model for diff review: change summary, security scan (RCE, injection, etc.), and prompt adherence check. Runs in parallel with tests. |
 | `shadow_env` | `[]` | Extra env var names to shadow beyond what's in `.env` |
@@ -505,7 +491,7 @@ FTL/
 - Bedrock Guardrails integration — hard-blocks merge on detected secrets or PII
 - `ftl config --aws` one-shot wizard — provisions S3, CloudWatch, Guardrail, SM prefix
 - CloudWatch session tracing
-- Multi-agent support: Claude Code, Codex, Aider, Kiro
+- Multi-agent support: Claude Code, Codex, Aider
 - `ftl setup` wizard — agent selection, tester model, Docker Hub pull
 - Published Docker Hub images (`vvenne/ftl:latest`, `:codex`, `:aider`, `:kiro`, `:full`)
 - Parallel reviewer — change summary, security scan (RCE, injection, deserialization, etc.), and prompt adherence check running in parallel with tests
