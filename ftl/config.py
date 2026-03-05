@@ -9,6 +9,7 @@ REQUIRED_KEYS = {"agent", "tester"}
 DEFAULT_CONFIG = {
     "agent": "claude-code",
     "tester": "claude-haiku-4-5-20251001",
+    "reviewer": "claude-haiku-4-5-20251001",
     # Optional: "snapshot_backend": "s3", "s3_bucket": "my-ftl-snapshots"
     # Optional: "shadow_env": [], "agent_env": []
 }

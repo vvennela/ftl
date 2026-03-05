@@ -16,7 +16,7 @@ from ftl.log import write_log
 from ftl.snapshot import create_snapshot_store
 from ftl.sandbox import create_sandbox
 from ftl.agents import get_agent
-from ftl.diff import display_diff, review_diff
+from ftl.diff import display_diff, review_diff, review_changes, display_review
 from ftl.lint import lint_diffs, display_violations
 from ftl.planner import generate_tests_from_task, run_test_code, run_verification
 from ftl.tracing import setup_langfuse, StageTimer, AgentHeartbeat
@@ -121,6 +121,7 @@ class Session:
         self.shadow_env = None
         self.task = None
         self._proxy = None
+        self._review = None
 
     def start(self, task):
         """Start a new coding session: snapshot → sandbox → agent ∥ test-gen → run tests → diff."""
@@ -267,11 +268,31 @@ class Session:
         # 6. Run tests — generation was parallel so test_future is usually
         #    already done by the time the agent finishes.
         test_code = test_future.result()
-        if test_code:
-            self.console.print("[bold]Running tests...[/bold]")
-            run_test_code(test_code, self.sandbox, self.console)
-            elapsed = timer.mark("tests")
-            cloudwatch.emit(self.trace_id, "stage", "tests", elapsed_ms=elapsed * 1000)
+
+        # Compute diff now — agent is done, sandbox state is final. Storing eagerly
+        # so the reviewer and test runner can both start immediately.
+        self.diffs = self.sandbox.get_diff(self.snapshot_path)
+
+        # Run tests + reviewer in parallel. Both run while the user waits;
+        # reviewer output is shown before the raw diff at merge time.
+        self._review = None
+        reviewer_model = self.config.get("reviewer", self.tester)
+        with ThreadPoolExecutor(max_workers=2) as review_exec:
+            review_future = (
+                review_exec.submit(review_changes, self.diffs, task, reviewer_model)
+                if reviewer_model and self.diffs else None
+            )
+            if test_code:
+                self.console.print("[bold]Running tests...[/bold]")
+                test_run_future = review_exec.submit(
+                    run_test_code, test_code, self.sandbox, self.console
+                )
+                test_run_future.result()
+                elapsed = timer.mark("tests")
+                cloudwatch.emit(self.trace_id, "stage", "tests", elapsed_ms=elapsed * 1000)
+        # Both futures are complete when the with block exits (shutdown waits)
+        if review_future is not None:
+            self._review = review_future.result()
 
         self.task = task
 
@@ -301,7 +322,8 @@ class Session:
         self.agent.continue_run(message, "/workspace", self.sandbox, callback=renderer.feed)
         renderer.finish()
         self.agent_calls += 1
-        self.diffs = None  # invalidate; recomputed on next access
+        self.diffs = None   # invalidate; recomputed on next access
+        self._review = None
 
     def show_diff(self):
         """Display the current diff."""
@@ -354,6 +376,8 @@ class Session:
                     "[bold yellow]Credential violations detected. "
                     "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
                 )
+
+        display_review(self._review, self.console)
 
         planner_model = self.config.get("planner_model", self.tester)
         approved = review_diff(diffs, planner_model)
@@ -408,6 +432,7 @@ class Session:
         self.agent_calls = 0
         self.workspace = None
         self.diffs = None
+        self._review = None
         self.shadow_env = None
 
     @property

@@ -177,6 +177,7 @@ Credentials persist in the container until it is removed.
 {
   "agent": "claude-code",
   "tester": "claude-haiku-4-5-20251001",
+  "reviewer": "claude-haiku-4-5-20251001",
 
   "shadow_env": ["MY_EXTRA_SECRET"],
   "agent_env": ["SOME_VAR_TO_FORWARD"],
@@ -196,6 +197,7 @@ Credentials persist in the container until it is removed.
 |---|---|---|
 | `agent` | `"claude-code"` | Agent to run: `"claude-code"`, `"codex"`, `"aider"`, `"kiro"` |
 | `tester` | `"claude-haiku-4-5-20251001"` | LiteLLM model string for adversarial test generation |
+| `reviewer` | `"claude-haiku-4-5-20251001"` | LiteLLM model for diff review: change summary, security scan (RCE, injection, etc.), and prompt adherence check. Runs in parallel with tests. |
 | `shadow_env` | `[]` | Extra env var names to shadow beyond what's in `.env` |
 | `agent_env` | `[]` | Extra env vars from your host to forward into the sandbox |
 | `setup` | — | Shell command run once on a **fresh container only**, before the agent starts |
