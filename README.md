@@ -23,14 +23,16 @@ ftl code "build login component with Supabase auth"
 ```
 
 ```
-1. SNAPSHOT      — rsync project state to ~/.ftl/snapshots/<id>
-2. BOOT          — reuse persistent container or start fresh (per project)
-3. INJECT        — shadow credentials replace real keys inside sandbox
-4. AGENT ∥ TESTS — coding agent runs; adversarial tests generate in parallel
-5. RUN TESTS     — pre-generated tests execute the moment the agent finishes
-6. LINT          — diff scanned for credentials and dangerous operations
-7. DIFF          — computed on demand; file-level review of all changes
-8. APPROVE       — human reviews, asks questions, merges or rejects
+1. SNAPSHOT        — rsync project state to ~/.ftl/snapshots/<id>
+2. BOOT            — reuse persistent container or start fresh (per project)
+3. INJECT          — shadow credentials replace real keys inside sandbox
+4. AGENT ∥ TESTS   — coding agent runs; adversarial tests generate in parallel
+5. RUN TESTS       — pre-generated tests execute the moment the agent finishes
+   ∥ REVIEW        — reviewer runs in parallel: change summary, security scan,
+                      prompt adherence check (did the agent follow the task?)
+6. LINT            — diff scanned for credentials and dangerous operations
+7. DIFF            — computed on demand; file-level review of all changes
+8. APPROVE         — human reviews summary + findings, asks questions, merges or rejects
 ```
 
 The agent runs entirely inside Docker. It never sees your real API keys or your host filesystem. Nothing touches your project without explicit approval.
