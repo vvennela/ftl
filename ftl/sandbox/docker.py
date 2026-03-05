@@ -12,7 +12,14 @@ try:
 except ImportError:
     _FCNTL_AVAILABLE = False  # Windows fallback — no locking
 
-IMAGE = "ftl-sandbox:latest"
+_REGISTRY = "vvenne/ftl"
+AGENT_IMAGES = {
+    "claude-code": f"{_REGISTRY}:latest",
+    "codex":       f"{_REGISTRY}:codex",
+    "aider":       f"{_REGISTRY}:aider",
+    "kiro":        f"{_REGISTRY}:kiro",
+}
+_DEFAULT_IMAGE = f"{_REGISTRY}:latest"
 ENV_FILE = "/tmp/.ftl_env"
 DEFAULT_TIMEOUT = 3600  # 60 minutes (matches agent timeout)
 
@@ -83,26 +90,26 @@ print(json.dumps(results))
 """
 
 
-def _container_file(project_path):
-    """Path to the persisted container ID file for this project."""
-    slug = hashlib.md5(str(project_path).encode()).hexdigest()[:12]
+def _container_file(project_path, image):
+    """Path to the persisted container ID file for this project + image combo."""
+    slug = hashlib.md5(f"{project_path}:{image}".encode()).hexdigest()[:12]
     container_dir = Path.home() / ".ftl" / "containers"
     container_dir.mkdir(parents=True, exist_ok=True)
     return container_dir / slug
 
 
-def _container_lock_file(project_path):
+def _container_lock_file(project_path, image):
     """Path to the lock file used to serialize container boot for this project."""
-    slug = hashlib.md5(str(project_path).encode()).hexdigest()[:12]
+    slug = hashlib.md5(f"{project_path}:{image}".encode()).hexdigest()[:12]
     container_dir = Path.home() / ".ftl" / "containers"
     container_dir.mkdir(parents=True, exist_ok=True)
     return container_dir / f"{slug}.lock"
 
 
-def _check_image_exists():
-    """Check Docker is running and the ftl-sandbox image is built."""
+def _check_image_exists(image):
+    """Check Docker is running and the required image exists locally."""
     result = subprocess.run(
-        ["docker", "images", "-q", IMAGE],
+        ["docker", "images", "-q", image],
         capture_output=True,
         text=True,
     )
@@ -113,7 +120,7 @@ def _check_image_exists():
         )
     if not result.stdout.strip():
         raise RuntimeError(
-            f"Docker image '{IMAGE}' not found. Run 'ftl setup' to build it."
+            f"Docker image '{image}' not found. Run 'ftl setup' or: docker pull {image}"
         )
 
 
@@ -122,7 +129,8 @@ class DockerSandbox(Sandbox):
     _standby_id = None
     _lock = threading.Lock()
 
-    def __init__(self):
+    def __init__(self, image=None):
+        self.image = image or _DEFAULT_IMAGE
         self.container_id = None
         self.fresh = False  # True if boot() created a new container this session
         self._credentials = {}
@@ -142,7 +150,7 @@ class DockerSandbox(Sandbox):
         Workspace is always reset from the snapshot before handing off to the agent.
         setup_cmd runs only on a fresh container (not on warm reuse) after env vars are written.
         """
-        _check_image_exists()
+        _check_image_exists(self.image)
         snapshot_path = Path(snapshot_path).resolve()
         snapshot_id = snapshot_path.name
         self._credentials = credentials or {}
@@ -154,8 +162,8 @@ class DockerSandbox(Sandbox):
         #    can't both claim the same container (race condition).
         existing_id = None
         if self._project_path:
-            cfile = _container_file(self._project_path)
-            lock_path = _container_lock_file(self._project_path)
+            cfile = _container_file(self._project_path, self.image)
+            lock_path = _container_lock_file(self._project_path, self.image)
             lock_fd = open(lock_path, "w")
             try:
                 if _FCNTL_AVAILABLE:
@@ -191,7 +199,7 @@ class DockerSandbox(Sandbox):
 
         # Persist so the next `ftl code` invocation can reuse this container
         if self._project_path:
-            _container_file(self._project_path).write_text(self.container_id)
+            _container_file(self._project_path, self.image).write_text(self.container_id)
 
         # Write all env vars to file inside container:
         # - shadow credentials (project secrets the agent sees as fake keys)
@@ -311,9 +319,13 @@ class DockerSandbox(Sandbox):
             "--cpus=2",
             "-v", f"{snapshots_dir}:/mnt/snapshots:ro",
             "-w", "/workspace",
-            IMAGE,
-            "sleep", "infinity",
         ]
+        # Mount host AWS credentials so agents that need AWS (e.g. kiro-cli) can
+        # authenticate without requiring separate credential setup inside the container.
+        aws_dir = Path.home() / ".aws"
+        if aws_dir.is_dir():
+            cmd += ["-v", f"{aws_dir}:/home/ftl/.aws:ro"]
+        cmd += [self.image, "sleep", "infinity"]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout.strip()
 

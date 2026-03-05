@@ -205,7 +205,7 @@ class Session:
 
         # 4. Boot sandbox
         self.console.print("[bold]Booting sandbox...[/bold]")
-        self.sandbox = create_sandbox()
+        self.sandbox = create_sandbox(agent=self.agent_name)
         self.sandbox.boot(
             self.snapshot_path,
             credentials=self.shadow_env,

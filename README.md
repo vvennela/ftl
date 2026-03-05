@@ -179,13 +179,15 @@ FTL supports four coding agents. Select one during `ftl setup` or set `agent` in
 | Aider | `"aider"` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
 | Kiro | `"kiro"` | AWS credentials + browser login |
 
-**Kiro authentication:** Kiro uses browser-based AWS SSO. After your first `ftl code` run, authenticate inside the container:
+**Kiro authentication:** If `~/.aws/credentials` exists on your host, FTL automatically mounts it into the container at `/home/ftl/.aws` — kiro-cli will use those credentials without any extra setup.
+
+If you don't have a credentials file, authenticate manually after the first boot:
 
 ```bash
-docker exec -it $(docker ps -q --filter ancestor=vvenne/ftl:kiro) kiro-cli login
+docker exec -it <container_id> kiro-cli login --use-device-flow
 ```
 
-Credentials persist in the container until it is removed.
+`docker ps --filter ancestor=vvenne/ftl:kiro` shows the container ID. Credentials persist in the container until it is removed.
 
 ---
 

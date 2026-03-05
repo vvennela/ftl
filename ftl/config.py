@@ -70,6 +70,7 @@ def init_config(path=None, agent=None, tester=None):
     init = {
         "agent": agent or global_cfg.get("agent") or DEFAULT_CONFIG["agent"],
         "tester": tester or global_cfg.get("tester") or DEFAULT_CONFIG["tester"],
+        "reviewer": global_cfg.get("reviewer") or DEFAULT_CONFIG["reviewer"],
     }
     config_path.write_text(json.dumps(init, indent=2))
     return config_path

@@ -1,7 +1,8 @@
-from ftl.sandbox.docker import DockerSandbox
+from ftl.sandbox.docker import DockerSandbox, AGENT_IMAGES, _DEFAULT_IMAGE
 
 
-def create_sandbox(backend="docker"):
+def create_sandbox(agent="claude-code", backend="docker"):
     if backend == "docker":
-        return DockerSandbox()
+        image = AGENT_IMAGES.get(agent, _DEFAULT_IMAGE)
+        return DockerSandbox(image=image)
     raise ValueError(f"Unknown sandbox backend: {backend}")
