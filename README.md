@@ -110,11 +110,29 @@ The values come from your global `~/.ftl/config.json` set during `ftl setup`. Ed
 ftl code 'create a Stripe payment module'   # use single quotes if the task contains $
 ```
 
-FTL snapshots your project, boots the sandbox, runs the agent while generating tests in parallel, then shows you a diff to review:
+FTL snapshots your project, boots the sandbox, runs the agent while generating tests in parallel, then shows you a review before the raw diff:
+
+```
+  Tests passed.
+
+  Change summary
+  payments.py — Adds /webhook endpoint that verifies Stripe signatures and
+  writes events to the events table. migration_001.py — Creates events table.
+
+  Security: clean
+
+── CREATED: payments.py ──
+  + ...
+
+  [A]pprove  [R]eject  or ask a question
+  >
+```
 
 - `a` — approve and merge changes to your project
 - `r` — reject and discard all changes
 - Any other input — ask the model a question about the diff (e.g. "does this handle null inputs?")
+
+The **reviewer** runs in parallel with tests and produces three things before the raw diff: a plain-English summary of what changed in each file, any security findings (RCE, injection, unsafe deserialization, etc.), and a prompt adherence check — flagging if the agent modified files outside the scope of the task or shows signs of having been redirected by injected content in the codebase.
 
 Steps 1–2 are one-time machine setup. Step 3 is once per project.
 
@@ -210,17 +228,18 @@ Credentials persist in the container until it is removed.
 | `guardrail_id` | — | Bedrock Guardrail ID. When set, replaces the local lint scan — hard-blocks merge if the guardrail intervenes |
 | `guardrail_version` | `"DRAFT"` | Guardrail version to apply |
 
-### Choosing a tester model
+### Choosing tester and reviewer models
 
-Any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers) works:
+Both `tester` and `reviewer` accept any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers):
 
 ```json
-{ "tester": "claude-haiku-4-5-20251001" }               // Anthropic direct (default)
-{ "tester": "bedrock/us.anthropic.claude-sonnet-4-6" }   // AWS Bedrock
-{ "tester": "openai/gpt-4o-mini" }                       // OpenAI
+{ "tester": "claude-haiku-4-5-20251001" }                        // Anthropic direct (default)
+{ "tester": "bedrock/us.anthropic.claude-haiku-4-5-20251001" }   // AWS Bedrock
+{ "reviewer": "bedrock/us.amazon.nova-pro-v1:0" }                // Amazon Nova Pro via Bedrock
+{ "tester": "openai/gpt-4o-mini" }                               // OpenAI
 ```
 
-The tester runs in parallel with the agent, so model latency doesn't add to wall-clock time.
+Both run in parallel with the agent (tester) and with tests (reviewer), so model latency doesn't add to wall-clock time. You can use a cheaper model for test generation and a more capable one for the security review — they run concurrently regardless.
 
 ### Project dependencies (setup hook)
 
@@ -434,11 +453,11 @@ FTL/
 │   └── publish.sh               # Build and push all Docker Hub tag variants
 ├── ftl/
 │   ├── cli.py                   # CLI entry points, setup wizard, interactive shell
-│   ├── orchestrator.py          # Session lifecycle: snapshot → boot → agent ∥ tester → merge
+│   ├── orchestrator.py          # Session lifecycle: snapshot → boot → agent ∥ tester → tests ∥ reviewer → merge
 │   ├── planner.py               # Tester: parallel test generation + execution
 │   ├── proxy.py                 # HTTP/HTTPS credential-swap proxy (optional, requires cryptography)
 │   ├── render.py                # Stream-JSON renderer: per-tool live progress counters
-│   ├── diff.py                  # Diff computation, display, interactive review with LLM Q&A
+│   ├── diff.py                  # Diff computation, display, reviewer (summary + security + adherence), Q&A
 │   ├── lint.py                  # Credential + dangerous operation scanner
 │   ├── secrets.py               # AWS Secrets Manager loader (AWS mode)
 │   ├── guardrails.py            # Bedrock Guardrail apply (AWS mode)
@@ -487,6 +506,7 @@ FTL/
 - Multi-agent support: Claude Code, Codex, Aider, Kiro
 - `ftl setup` wizard — agent selection, tester model, Docker Hub pull
 - Published Docker Hub images (`vvenne/ftl:latest`, `:codex`, `:aider`, `:kiro`, `:full`)
+- Parallel reviewer — change summary, security scan (RCE, injection, deserialization, etc.), and prompt adherence check running in parallel with tests
 
 **Next:**
 - Tool dispatch layer — planner routes between coding, GitHub, Slack, email
