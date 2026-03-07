@@ -57,7 +57,7 @@ pip install -e .
 ftl setup
 ```
 
-Pulls the sandbox image from Docker Hub, asks which agent and tester model you want, and saves your API key:
+Pulls the sandbox image from Docker Hub, asks which agent and tester/reviewer models you want, and saves your API key:
 
 ```
 Which agent do you want to use?
@@ -66,12 +66,19 @@ Which agent do you want to use?
   3. Aider        (open-source)
   Choice [1]:
 
-Which model for test generation?
-  1. Anthropic API — claude-haiku  (uses ANTHROPIC_API_KEY)
-  2. AWS Bedrock   — claude-sonnet (uses AWS credentials)
-  3. Skip test generation
-  Choice [1]:
+Which provider for test generation?
+  1. Anthropic     (e.g. claude-haiku-4-5-20251001)
+  2. OpenAI        (e.g. gpt-4o-mini)
+  3. Ollama        (e.g. ollama/llama3  — local, no key needed)
+  4. AWS Bedrock   (e.g. bedrock/us.anthropic.claude-haiku-4-5-20251001)
+  5. Other         (any LiteLLM-compatible string)
+  Choice [4]:
+Model: bedrock/us.anthropic.claude-haiku-4-5-20251001
+
+Use the same model for the reviewer? [Y/n]:
 ```
+
+Both tester and reviewer accept any [LiteLLM-compatible](https://docs.litellm.ai/docs/providers) model string. Ollama and AWS Bedrock require no API key at this step.
 
 Your choices are saved globally to `~/.ftl/config.json` and used as defaults for every new project. Credentials are saved to `~/.ftl/credentials` and loaded automatically on every invocation — no need to `export` each session.
 
@@ -95,7 +102,8 @@ Creates `.ftlconfig` in your project root:
 ```json
 {
   "agent": "claude-code",
-  "tester": "claude-haiku-4-5-20251001"
+  "tester": "bedrock/us.anthropic.claude-haiku-4-5-20251001",
+  "reviewer": "bedrock/us.anthropic.claude-haiku-4-5-20251001"
 }
 ```
 
