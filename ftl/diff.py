@@ -460,7 +460,9 @@ def ask_about_diff(question, sandbox, workspace):
             pass
 
     try:
-        sandbox.exec_stream(cmd, callback=_parse, timeout=120)
+        sandbox.exec_stream(cmd, callback=_parse, timeout=300)
+    except TimeoutError:
+        console.print("[yellow]Agent didn't respond within 5 minutes.[/yellow]")
     except Exception:
         console.print("[yellow]Could not reach agent. Is the sandbox still running?[/yellow]")
     finally:
