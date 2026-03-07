@@ -379,8 +379,10 @@ class Session:
 
         display_review(self._review, self.console)
 
-        planner_model = self.config.get("planner_model", self.tester)
-        approved = review_diff(diffs, planner_model)
+        approved = review_diff(
+            diffs, self.sandbox, self.workspace,
+            get_diffs=lambda: self.sandbox.get_diff(self.snapshot_path),
+        )
 
         if approved:
             self.console.print("[bold green]Approved. Merging changes...[/bold green]")

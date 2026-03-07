@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 import litellm
+litellm.suppress_debug_info = True
+litellm.set_verbose = False
 from rich.console import Console
 from rich.text import Text
 
@@ -328,6 +330,7 @@ def review_changes(diffs, task, model):
     """
     if not diffs:
         return None
+    console = Console()
     try:
         response = litellm.completion(
             model=model,
@@ -344,8 +347,15 @@ def review_changes(diffs, task, model):
         if m:
             text = m.group(1).strip()
         return json.loads(text)
-    except Exception:
-        return None
+    except json.JSONDecodeError as e:
+        console.print(f"[yellow]Reviewer: bad JSON in response — {e}[/yellow]")
+    except Exception as e:
+        msg = str(e)
+        # Trim very long error messages (e.g. full HTTP response bodies)
+        if len(msg) > 200:
+            msg = msg[:200] + "…"
+        console.print(f"[yellow]Reviewer unavailable: {msg}[/yellow]")
+    return None
 
 
 def display_review(review, console=None):
@@ -388,36 +398,83 @@ def display_review(review, console=None):
         console.print()
 
 
-def ask_about_diff(diffs, question, model):
-    """Ask the planner model a question about the diff."""
-    console = Console()
-    diff_text = diff_to_text(diffs)
+def ask_about_diff(question, sandbox, workspace):
+    """Ask the agent a question by continuing its conversation in the container."""
+    import shlex
+    import json
+    import sys
+    import threading
+    import time
 
-    response = litellm.completion(
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are reviewing code changes in a diff. Answer the user's question about these changes concisely.",
-            },
-            {
-                "role": "user",
-                "content": f"Here are the code changes:\n\n{diff_text}\n\nQuestion: {question}",
-            },
-        ],
-        stream=True,
+    console = Console()
+    escaped = shlex.quote(question)
+    cmd = (
+        f"cd {workspace} && claude -p {escaped} -c"
+        f" --output-format stream-json --verbose --dangerously-skip-permissions 2>/dev/null"
     )
 
     console.print()
-    for chunk in response:
-        content = chunk.choices[0].delta.content
-        if content:
-            console.print(content, end="")
+
+    # Animated thinking indicator — runs in a thread since exec_stream blocks
+    received_text = [False]
+    stop_spinner = [False]
+
+    def _spinner():
+        frames = ["Thinking   ", "Thinking.  ", "Thinking.. ", "Thinking..."]
+        i = 0
+        while not stop_spinner[0]:
+            if not received_text[0]:
+                sys.stdout.write(f"\r  \033[2m{frames[i % 4]}\033[0m")
+                sys.stdout.flush()
+            i += 1
+            time.sleep(0.35)
+
+    threading.Thread(target=_spinner, daemon=True).start()
+
+    def _parse(line):
+        line = line.strip()
+        if not line:
+            return
+        try:
+            data = json.loads(line)
+            # Streaming text tokens (word-by-word as claude generates)
+            if data.get("type") == "content_block_delta":
+                delta = data.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    if not received_text[0]:
+                        received_text[0] = True
+                        sys.stdout.write("\r" + " " * 20 + "\r")
+                        sys.stdout.flush()
+                    sys.stdout.write(delta["text"])
+                    sys.stdout.flush()
+            # Full message fallback if no deltas emitted
+            elif data.get("type") == "assistant" and not received_text[0]:
+                received_text[0] = True
+                sys.stdout.write("\r" + " " * 20 + "\r")
+                sys.stdout.flush()
+                for block in data.get("message", {}).get("content", []):
+                    if block.get("type") == "text":
+                        sys.stdout.write(block["text"])
+                        sys.stdout.flush()
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    try:
+        sandbox.exec_stream(cmd, callback=_parse, timeout=120)
+    except Exception:
+        console.print("[yellow]Could not reach agent. Is the sandbox still running?[/yellow]")
+    finally:
+        stop_spinner[0] = True
+
     console.print("\n")
 
 
-def review_diff(diffs, model):
-    """Interactive diff review. User can approve, reject, or ask questions."""
+def review_diff(diffs, sandbox, workspace, get_diffs=None):
+    """Interactive diff review. User can approve, reject, or ask questions.
+
+    get_diffs: optional callable that returns fresh diffs — used to detect
+    when the user's question caused code changes so the diff can be refreshed.
+    """
     console = Console()
     display_diff(diffs)
 
@@ -436,4 +493,13 @@ def review_diff(diffs, model):
         if choice.lower() in ("r", "reject", "q", "quit", "exit"):
             return False
 
-        ask_about_diff(diffs, choice, model)
+        ask_about_diff(choice, sandbox, workspace)
+
+        # If the question caused file changes, refresh and redisplay the diff
+        if get_diffs is not None:
+            fresh = get_diffs()
+            if fresh != diffs:
+                diffs = fresh
+                console.print()
+                console.print("[bold cyan]Files changed — updated diff:[/bold cyan]")
+                display_diff(diffs)

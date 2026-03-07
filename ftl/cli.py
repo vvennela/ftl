@@ -233,37 +233,23 @@ _AGENT_CHOICES = [
     ("1", "Claude Code  (Anthropic, recommended)", "latest", "claude-code", []),
     ("2", "Codex        (OpenAI)",                 "codex",  "codex",       ["codex"]),
     ("3", "Aider        (open-source)",             "aider",  "aider",       ["aider"]),
-    ("4", "Kiro         (AWS)",                     "kiro",   "kiro",        ["kiro"]),
 ]
 
-# Dockerfile snippets for local fallback builds. Architecture-aware where needed.
+# Dockerfile snippets for local fallback builds.
 _AGENT_SNIPPETS = {
     "codex": "RUN npm install -g @openai/codex && npm cache clean --force",
     "aider": "RUN pip3 install --break-system-packages aider-chat",
-    "kiro": (
-        "RUN apt-get update && apt-get install -y --no-install-recommends unzip"
-        " && ARCH=$(uname -m)"
-        " && if [ \"$ARCH\" = \"x86_64\" ]; then"
-        "   curl -fsSL https://desktop-release.q.us-east-1.amazonaws.com/latest/kiro-cli.deb -o /tmp/kiro-cli.deb"
-        "   && dpkg -i /tmp/kiro-cli.deb && apt-get install -f -y --no-install-recommends"
-        "   && rm -f /tmp/kiro-cli.deb;"
-        " elif [ \"$ARCH\" = \"aarch64\" ]; then"
-        "   curl -fsSL https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux.zip -o /tmp/kiro.zip"
-        "   && unzip /tmp/kiro.zip -d /tmp/kiro-extract"
-        "   && if [ -f /tmp/kiro-extract/install.sh ]; then PREFIX=/usr/local bash /tmp/kiro-extract/install.sh;"
-        "   else find /tmp/kiro-extract -type f -name kiro-cli -exec install -m755 {} /usr/local/bin/kiro-cli \\;; fi"
-        "   && rm -rf /tmp/kiro.zip /tmp/kiro-extract;"
-        " fi"
-        " && rm -rf /var/lib/apt/lists/*"
-    ),
 }
 
-# Tester model choices for the setup wizard.
-# (number, label, litellm_model_string)
-_TESTER_CHOICES = [
-    ("1", "Anthropic API — claude-haiku  (uses ANTHROPIC_API_KEY)", "claude-haiku-4-5-20251001"),
-    ("2", "AWS Bedrock   — claude-sonnet (uses AWS credentials)",    "bedrock/us.anthropic.claude-sonnet-4-6"),
-    ("3", "Skip test generation",                                    ""),
+# Provider menu for tester/reviewer selection.
+# (number, label, key, api_key_env_var_or_None)
+# api_key_env_var=None means no key needed (Ollama=local, Bedrock=AWS creds)
+_PROVIDER_CHOICES = [
+    ("1", "Anthropic     (e.g. claude-haiku-4-5-20251001)",                          "anthropic", "ANTHROPIC_API_KEY"),
+    ("2", "OpenAI        (e.g. gpt-4o-mini)",                                         "openai",    "OPENAI_API_KEY"),
+    ("3", "Ollama        (e.g. ollama/llama3  — local, no key needed)",               "ollama",    None),
+    ("4", "AWS Bedrock   (e.g. bedrock/us.anthropic.claude-haiku-4-5-20251001)",      "bedrock",   None),
+    ("5", "Other         (any LiteLLM-compatible string)",                             "other",     None),
 ]
 
 
@@ -312,9 +298,57 @@ def _pull_or_build(console, hub_tag, local_agents):
     console.print("  [green]Image ready.[/green]")
 
 
+def _prompt_model(console, role, saved_keys):
+    """Prompt the user to pick a provider and model for tester or reviewer.
+
+    saved_keys: set of API key env var names already saved this session —
+    skips re-prompting if the key was just entered for the tester.
+
+    Returns (model_string, updated_saved_keys).
+    """
+    console.print(f"[bold]Which model for {role}?[/bold]")
+    console.print("  [dim]Any LiteLLM-compatible string is accepted. See: https://docs.litellm.ai/docs/providers[/dim]")
+    for num, label, _, _ in _PROVIDER_CHOICES:
+        console.print(f"  {num}. {label}")
+    console.print()
+    choice = click.prompt("  Choice", default="1").strip()
+    matched = next((p for p in _PROVIDER_CHOICES if p[0] == choice), _PROVIDER_CHOICES[0])
+    _, _, provider_key, api_key_var = matched
+
+    model = click.prompt("  Model").strip()
+    if not model:
+        console.print(f"  [yellow]Skipped {role}.[/yellow]")
+        return "", saved_keys
+
+    # Prompt for API key if needed and not already saved this session
+    if api_key_var and api_key_var not in saved_keys:
+        existing = os.environ.get(api_key_var) or (
+            next(
+                (line.split("=", 1)[1] for line in
+                 (FTL_CREDENTIALS_FILE.read_text().splitlines() if FTL_CREDENTIALS_FILE.exists() else [])
+                 if line.startswith(f"{api_key_var}=")),
+                None,
+            )
+        )
+        if existing:
+            console.print(f"  [green]{api_key_var} already configured.[/green]")
+            saved_keys.add(api_key_var)
+        else:
+            key = click.prompt(f"  {api_key_var}", hide_input=True, default="", show_default=False)
+            if key.strip():
+                save_ftl_credential(api_key_var, key.strip())
+                console.print(f"  [green]{api_key_var} saved to ~/.ftl/credentials[/green]")
+                saved_keys.add(api_key_var)
+            else:
+                console.print(f"  [yellow]Skipped. Set later: ftl auth {api_key_var} <value>[/yellow]")
+
+    console.print(f"  [green]{role.capitalize()}: {model}[/green]")
+    return model, saved_keys
+
+
 @main.command()
 def setup():
-    """One-command setup: choose agents + tester model, pull sandbox image, save API key."""
+    """One-command setup: choose agent, tester, reviewer, pull sandbox image, save API keys."""
     console = Console()
 
     # 1. Check Docker is running
@@ -340,8 +374,6 @@ def setup():
     )
 
     chosen_agent_key = None
-    chosen_kiro = False
-
     if image_exists and not click.confirm(
         "  ftl-sandbox image already exists. Reconfigure?", default=False
     ):
@@ -355,40 +387,16 @@ def setup():
         choice = click.prompt("  Choice", default="1").strip()
         matched = next((c for c in _AGENT_CHOICES if c[0] == choice), _AGENT_CHOICES[0])
         _, _, chosen_tag, chosen_agent_key, chosen_local_agents = matched
-        chosen_kiro = chosen_agent_key == "kiro"
         console.print()
         _pull_or_build(console, chosen_tag, chosen_local_agents)
         save_global_config({"agent": chosen_agent_key})
 
-    # 3. Tester model selection
-    console.print()
-    console.print("[bold]Which model for test generation?[/bold]")
-    for num, label, _ in _TESTER_CHOICES:
-        console.print(f"  {num}. {label}")
-    console.print()
-    tester_choice = click.prompt("  Choice", default="1").strip()
-    matched_tester = next((t for t in _TESTER_CHOICES if t[0] == tester_choice), _TESTER_CHOICES[0])
-    tester_model = matched_tester[2]
-    save_global_config({"tester": tester_model} if tester_model else {"tester": ""})
-    console.print(f"  [green]Tester: {matched_tester[1]}[/green]")
-
-    # 4. Kiro authentication note
-    if chosen_kiro or chosen_agent_key == "kiro":
-        console.print()
-        console.print("[bold]Kiro authentication[/bold]")
-        console.print(
-            "  Kiro uses browser-based login. After your first [bold]ftl code[/bold] run,\n"
-            "  authenticate with:\n"
-            "  [dim]docker exec -it $(docker ps -qf ancestor=ftl-sandbox) kiro-cli login[/dim]"
-        )
-        console.print("  [dim]Credentials persist in the container until it is removed.[/dim]")
-
-    # 5. Anthropic API key
+    # 3. Anthropic API key (needed by the coding agent)
     console.print()
     if _check_api_key_configured():
         console.print("  [green]ANTHROPIC_API_KEY already configured.[/green]")
     else:
-        console.print("[bold]Anthropic API key[/bold]")
+        console.print("[bold]Anthropic API key[/bold]  [dim](used by the coding agent)[/dim]")
         console.print("  [dim]Get one at https://console.anthropic.com[/dim]")
         key = click.prompt("  ANTHROPIC_API_KEY", hide_input=True, default="", show_default=False)
         if key.strip():
@@ -396,6 +404,23 @@ def setup():
             console.print("  [green]Saved to ~/.ftl/credentials[/green]")
         else:
             console.print("  [yellow]Skipped. Set later: ftl auth ANTHROPIC_API_KEY sk-ant-...[/yellow]")
+
+    # 4. Tester model
+    console.print()
+    saved_keys = {"ANTHROPIC_API_KEY"}  # already handled above
+    tester_model, saved_keys = _prompt_model(console, "tester", saved_keys)
+    save_global_config({"tester": tester_model})
+
+    # 5. Reviewer model (can reuse tester)
+    console.print()
+    reuse = click.confirm("  Use the same model for the reviewer?", default=True)
+    if reuse:
+        reviewer_model = tester_model
+        console.print(f"  [green]Reviewer: {reviewer_model}[/green]")
+    else:
+        console.print()
+        reviewer_model, saved_keys = _prompt_model(console, "reviewer", saved_keys)
+    save_global_config({"reviewer": reviewer_model})
 
     # 6. Done
     console.print()

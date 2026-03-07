@@ -1,7 +1,7 @@
 import shlex
 from ftl.agents.base import Agent
 
-_FLAGS = "--output-format stream-json --verbose --dangerously-skip-permissions"
+_FLAGS = "--output-format stream-json --verbose --dangerously-skip-permissions --disallowed-tools EnterPlanMode"
 
 
 class ClaudeCodeAgent(Agent):

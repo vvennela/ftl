@@ -1,5 +1,7 @@
 import re
 import litellm
+litellm.suppress_debug_info = True
+litellm.set_verbose = False
 from rich.console import Console
 
 from ftl.agents import get_agent, AGENTS
