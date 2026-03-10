@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.table import Table
-from ftl.config import load_config, init_config, find_config, save_global_config
+from ftl.config import load_config, load_global_config, init_config, find_config, save_global_config
 from ftl.credentials import load_ftl_credentials, save_ftl_credential, FTL_CREDENTIALS_FILE
 from ftl.log import LOGS_FILE
 from ftl.orchestrator import run_task, Session
@@ -214,15 +214,61 @@ def logs(limit, show_all):
     console.print(table)
 
 
-def _check_api_key_configured():
-    """Return True if ANTHROPIC_API_KEY is in env or ~/.ftl/credentials."""
-    if "ANTHROPIC_API_KEY" in os.environ:
+def _has_saved_credential(key):
+    """Return True if the credential is already available in env or ~/.ftl/credentials."""
+    if key in os.environ:
         return True
     if FTL_CREDENTIALS_FILE.exists():
         for line in FTL_CREDENTIALS_FILE.read_text().splitlines():
-            if line.startswith("ANTHROPIC_API_KEY="):
+            if line.startswith(f"{key}="):
                 return True
     return False
+
+
+_AGENT_AUTH_PROMPTS = {
+    "claude-code": {
+        "title": "Anthropic API key",
+        "detail": "(used by the coding agent)",
+        "help": "Get one at https://console.anthropic.com",
+        "key": "ANTHROPIC_API_KEY",
+        "example": "ftl auth ANTHROPIC_API_KEY sk-ant-...",
+    },
+    "codex": {
+        "title": "OpenAI API key",
+        "detail": "(used by the Codex agent)",
+        "help": "Set the key used by codex inside the sandbox.",
+        "key": "OPENAI_API_KEY",
+        "example": "ftl auth OPENAI_API_KEY sk-...",
+    },
+    "aider": {
+        "title": "Agent API key",
+        "detail": "(Aider needs OPENAI_API_KEY or ANTHROPIC_API_KEY)",
+        "help": "OPENAI_API_KEY is prompted by default; you can swap to Anthropic later.",
+        "key": "OPENAI_API_KEY",
+        "example": "ftl auth OPENAI_API_KEY sk-...",
+    },
+}
+
+
+def _ensure_agent_credential(console, agent_name):
+    """Prompt for the selected agent's auth credential if it is not already configured."""
+    prompt = _AGENT_AUTH_PROMPTS.get(agent_name)
+    if not prompt:
+        return
+
+    key = prompt["key"]
+    if _has_saved_credential(key):
+        console.print(f"  [green]{key} already configured.[/green]")
+        return
+
+    console.print(f"[bold]{prompt['title']}[/bold]  [dim]{prompt['detail']}[/dim]")
+    console.print(f"  [dim]{prompt['help']}[/dim]")
+    value = click.prompt(f"  {key}", hide_input=True, default="", show_default=False)
+    if value.strip():
+        save_ftl_credential(key, value.strip())
+        console.print(f"  [green]Saved {key} to ~/.ftl/credentials[/green]")
+    else:
+        console.print(f"  [yellow]Skipped. Set later: {prompt['example']}[/yellow]")
 
 
 _REGISTRY = "vvenne/ftl"
@@ -373,7 +419,8 @@ def setup():
         ).stdout.strip()
     )
 
-    chosen_agent_key = None
+    global_cfg = load_global_config()
+    chosen_agent_key = global_cfg.get("agent", "claude-code")
     if image_exists and not click.confirm(
         "  ftl-sandbox image already exists. Reconfigure?", default=False
     ):
@@ -391,23 +438,17 @@ def setup():
         _pull_or_build(console, chosen_tag, chosen_local_agents)
         save_global_config({"agent": chosen_agent_key})
 
-    # 3. Anthropic API key (needed by the coding agent)
+    # 3. Agent credential
     console.print()
-    if _check_api_key_configured():
-        console.print("  [green]ANTHROPIC_API_KEY already configured.[/green]")
-    else:
-        console.print("[bold]Anthropic API key[/bold]  [dim](used by the coding agent)[/dim]")
-        console.print("  [dim]Get one at https://console.anthropic.com[/dim]")
-        key = click.prompt("  ANTHROPIC_API_KEY", hide_input=True, default="", show_default=False)
-        if key.strip():
-            save_ftl_credential("ANTHROPIC_API_KEY", key.strip())
-            console.print("  [green]Saved to ~/.ftl/credentials[/green]")
-        else:
-            console.print("  [yellow]Skipped. Set later: ftl auth ANTHROPIC_API_KEY sk-ant-...[/yellow]")
+    _ensure_agent_credential(console, chosen_agent_key)
 
     # 4. Tester model
     console.print()
-    saved_keys = {"ANTHROPIC_API_KEY"}  # already handled above
+    saved_keys = {
+        prompt["key"]
+        for prompt in _AGENT_AUTH_PROMPTS.values()
+        if _has_saved_credential(prompt["key"])
+    }
     tester_model, saved_keys = _prompt_model(console, "tester", saved_keys)
     save_global_config({"tester": tester_model})
 

@@ -17,6 +17,7 @@ import urllib.request
 import urllib.error
 import sys
 import os
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -119,6 +120,34 @@ def gen_self_signed_cert():
     cf = tempfile.NamedTemporaryFile(delete=False, suffix="-cert.pem")
     cf.write(cert_pem); cf.close()
     return kf.name, cf.name, cert_pem
+
+
+@pytest.fixture(autouse=True)
+def clear_received_requests():
+    received_requests.clear()
+    yield
+    received_requests.clear()
+
+
+@pytest.fixture
+def proxy():
+    from ftl.proxy import CredentialSwapProxy
+
+    try:
+        test_proxy = CredentialSwapProxy(SWAP)
+    except PermissionError:
+        pytest.skip("Socket binding is unavailable in this execution environment.")
+    test_proxy.start()
+    time.sleep(0.1)
+    try:
+        yield test_proxy
+    finally:
+        test_proxy.stop()
+
+
+@pytest.fixture
+def proxy_port(proxy):
+    return proxy.port
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

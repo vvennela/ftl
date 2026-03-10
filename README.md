@@ -41,7 +41,13 @@ The agent runs entirely inside Docker. It never sees your real API keys or your 
 
 ## Getting Started
 
-You need **Python 3.11+**, **Docker Desktop** (or Docker Engine on Linux), and an **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com)). On Linux, also install rsync (`apt install rsync`).
+You need **Python 3.11+**, **Docker Desktop** (or Docker Engine on Linux), and credentials for the agent you want to run:
+
+- **Claude Code** — `ANTHROPIC_API_KEY` ([console.anthropic.com](https://console.anthropic.com))
+- **Codex** — `OPENAI_API_KEY`
+- **Aider** — `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
+
+On Linux, also install rsync (`apt install rsync`).
 
 ### Step 1 — Install
 
@@ -57,7 +63,7 @@ pip install -e .
 ftl setup
 ```
 
-Pulls the sandbox image from Docker Hub, asks which agent and tester/reviewer models you want, and saves your API key:
+Pulls the sandbox image from Docker Hub, asks which agent and tester/reviewer models you want, and saves the credential required by that agent:
 
 ```
 Which agent do you want to use?
@@ -151,6 +157,14 @@ ftl auth AWS_ACCESS_KEY_ID AKIA...
 
 Or put them in a `.env` file in your project root — FTL reads it automatically.
 
+### Agent authentication
+
+FTL stores agent credentials in `~/.ftl/credentials` and forwards them into the sandbox automatically.
+
+- **Claude Code** uses `ANTHROPIC_API_KEY` directly.
+- **Codex** uses `OPENAI_API_KEY`. FTL also bootstraps Codex's local login state inside the sandbox automatically before the first task runs, so no manual `codex login` is required in the container.
+- **Aider** uses whichever model credential it needs (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`).
+
 ---
 
 ## Interactive Shell
@@ -169,7 +183,7 @@ ftl[active]> merge    — review diff, approve/reject, merge to project
 ftl[active]> reject   — discard all changes
 ```
 
-Follow-up instructions continue the same agent conversation in the same container. No cold boot between tasks.
+Follow-up instructions continue in the same container. Claude Code uses its native conversation-continue flow. Codex does not expose the same resume primitive, so FTL replays prior instructions plus the current unmerged diff to keep follow-up tasks coherent. No cold boot happens between tasks.
 
 ---
 
@@ -182,6 +196,12 @@ FTL supports three coding agents. Select one during `ftl setup` or set `agent` i
 | Claude Code | `"claude-code"` | `ANTHROPIC_API_KEY` |
 | Codex | `"codex"` | `OPENAI_API_KEY` |
 | Aider | `"aider"` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
+
+### Codex authentication
+
+Codex uses the `OPENAI_API_KEY` saved with `ftl auth OPENAI_API_KEY ...` or collected during `ftl setup`.
+
+Inside the sandbox, FTL forwards `OPENAI_API_KEY` and bootstraps Codex's local login state automatically before the first task runs. No manual `codex login` is required inside the container.
 
 ---
 
@@ -412,8 +432,9 @@ Every `litellm.completion()` call (tester, diff review, Q&A) is traced automatic
 | `/usr/lib/python3/` | Persists | Pre-installed: stripe, requests, httpx, boto3, openai, anthropic, pydantic, python-dotenv, pytest |
 | Global node_modules | Persists | `npm install -g` (TypeScript, ts-node, Jest, Claude Code) |
 | `/home/ftl/.claude/` | Persists | Claude Code conversation history |
+| `/home/ftl/.codex/` | Persists | Codex auth and session state |
 
-**Node.js warm start:** On every boot, FTL runs `claude --version` in the background to load Claude Code's modules into the Linux page cache. By the time you see "Running agent...", Node.js is already warm — eliminating the 5-8s cold-start penalty on the first task.
+**Agent warm start:** On every boot, FTL prewarms the selected agent runtime in the background (`claude --version`, `codex --version`, etc.) so the first task pays less startup cost.
 
 ---
 

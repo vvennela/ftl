@@ -14,8 +14,8 @@ Use a supported agent instead:
 
 class KiroAgent(Agent):
 
-    def run(self, task, workspace, sandbox, callback=None):
+    def run(self, task, workspace, sandbox, callback=None, context=None):
         raise RuntimeError(_NOT_SUPPORTED_MSG)
 
-    def continue_run(self, task, workspace, sandbox, callback=None):
+    def continue_run(self, task, workspace, sandbox, callback=None, context=None):
         raise RuntimeError(_NOT_SUPPORTED_MSG)

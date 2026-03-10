@@ -16,7 +16,7 @@ from ftl.log import write_log
 from ftl.snapshot import create_snapshot_store
 from ftl.sandbox import create_sandbox
 from ftl.agents import get_agent
-from ftl.diff import display_diff, review_diff, review_changes, display_review
+from ftl.diff import display_diff, review_diff, review_changes, display_review, diff_to_text
 from ftl.lint import lint_diffs, display_violations
 from ftl.planner import generate_tests_from_task, run_test_code, run_verification
 from ftl.tracing import setup_langfuse, StageTimer, AgentHeartbeat
@@ -120,8 +120,18 @@ class Session:
         self.diffs = None
         self.shadow_env = None
         self.task = None
+        self.history = []
         self._proxy = None
         self._review = None
+
+    def _agent_context(self):
+        """Context passed to agents that lack native session continuation."""
+        diffs = self._get_diffs() if self.sandbox else []
+        return {
+            "task": self.task or "",
+            "history": list(self.history),
+            "diff_text": diff_to_text(diffs) if diffs else "",
+        }
 
     def start(self, task):
         """Start a new coding session: snapshot → sandbox → agent ∥ test-gen → run tests → diff."""
@@ -221,6 +231,9 @@ class Session:
         if self._proxy:
             self._proxy.install_ca_in_container(self.sandbox)
 
+        # Give agents a chance to initialize their own on-disk auth/session state.
+        self.agent.setup_sandbox(self.sandbox)
+
         if self.sandbox.fresh and self.config.get("setup"):
             self.console.print("  Setup: ran on fresh container")
 
@@ -295,6 +308,7 @@ class Session:
             self._review = review_future.result()
 
         self.task = task
+        self.history = [task]
 
         write_log({
             "event": "session_start",
@@ -319,9 +333,16 @@ class Session:
         self.console.print(f"[bold cyan]  → Agent: {message}[/bold cyan]")
 
         renderer = AgentRenderer(self.console, trace_id=self.trace_id)
-        self.agent.continue_run(message, "/workspace", self.sandbox, callback=renderer.feed)
+        self.agent.continue_run(
+            message,
+            "/workspace",
+            self.sandbox,
+            callback=renderer.feed,
+            context=self._agent_context(),
+        )
         renderer.finish()
         self.agent_calls += 1
+        self.history.append(message)
         self.diffs = None   # invalidate; recomputed on next access
         self._review = None
 
@@ -369,18 +390,39 @@ class Session:
             violations = []  # no local lint when guardrail active
         else:
             # Local mode: existing lint scan
-            violations = lint_diffs(diffs, self.shadow_env)
+            violations = lint_diffs(diffs, self.shadow_env, task=self.task or "")
             display_violations(violations)
+            blocked = [v for v in violations if v.blocking]
+            if blocked:
+                self.console.print("[bold red]Local lint blocked merge. Changes discarded.[/bold red]")
+                write_log({
+                    "event": "review",
+                    "task": self.task or "",
+                    "snapshot": self.snapshot_id,
+                    "project": self.project_path,
+                    "result": "rejected",
+                    "lint_violations": len(violations),
+                }, trace_id=self.trace_id)
+                self._cleanup()
+                return
             if violations:
-                self.console.print(
-                    "[bold yellow]Credential violations detected. "
-                    "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
-                )
+                cred_violations = [v for v in violations if "credential" in v.reason.lower()]
+                if cred_violations:
+                    self.console.print(
+                        "[bold yellow]Credential violations detected. "
+                        "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
+                    )
+                else:
+                    self.console.print(
+                        "[bold yellow]Lint warnings detected. "
+                        "Proceeding to review — inspect flagged lines carefully.[/bold yellow]\n"
+                    )
 
         display_review(self._review, self.console)
 
         approved = review_diff(
-            diffs, self.sandbox, self.workspace,
+            diffs, self.sandbox, self.workspace, self.agent,
+            question_context=self._agent_context(),
             get_diffs=lambda: self.sandbox.get_diff(self.snapshot_path),
         )
 
@@ -436,6 +478,7 @@ class Session:
         self.diffs = None
         self._review = None
         self.shadow_env = None
+        self.history = []
 
     @property
     def is_active(self):

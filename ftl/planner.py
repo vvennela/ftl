@@ -15,6 +15,34 @@ def _extract_missing_modules(output):
 
 _FENCE_RE = re.compile(r"^```\w*\n(.*?)```$", re.DOTALL)
 
+_TASK_TESTER_SYSTEM = (
+    "You are an adversarial test engineer. Given a coding task description, "
+    "generate a runnable test script that verifies the implementation is correct "
+    "and tries to break it.\n\n"
+    "Cover multiple test categories whenever they are relevant: happy path, edge cases, "
+    "null/empty inputs, boundary values, malformed inputs, idempotency, error handling, "
+    "permission/auth behavior, serialization/deserialization, filesystem behavior, "
+    "network failure behavior, data integrity, and regression checks for the main requested behavior.\n\n"
+    "Prefer a compact but comprehensive suite rather than a single smoke test. "
+    "If the task implies an API, include request/response validation and failure cases. "
+    "If it implies persistence or migrations, verify destructive and non-destructive paths. "
+    "If it implies UI logic, verify validation and state transitions. "
+    "If it implies background jobs or retries, verify retry limits and duplicate handling.\n\n"
+    "Output ONLY the test script, no explanation. Use pytest for Python, jest/vitest for JS/TS.\n\n"
+    "IMPORTANT: Real API credentials are available as environment variables in the test environment. "
+    "Use them directly when the task requires real integrations — do NOT mock or stub external API calls unless the task clearly does not involve live services."
+)
+
+_DIFF_TESTER_SYSTEM = (
+    "You are an adversarial test engineer. Given code changes, generate a runnable test script "
+    "that tries to break the implementation.\n\n"
+    "Cover multiple relevant categories: regression checks for the changed behavior, edge cases, "
+    "boundary values, malformed inputs, error handling, idempotency, permission/auth behavior, "
+    "filesystem or persistence effects, and failure recovery. Prefer concise but meaningful coverage.\n\n"
+    "Output ONLY the test script. Use pytest for Python, jest/vitest for JS/TS.\n\n"
+    "IMPORTANT: Real API credentials are available as environment variables. Do NOT mock external API calls when the changes rely on real integrations."
+)
+
 
 def _strip_fence(code):
     """Strip markdown code fences if present."""
@@ -34,17 +62,7 @@ def generate_tests_from_task(task, model):
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are an adversarial test engineer. Given a coding task description, "
-                        "generate a test script that verifies the implementation is correct "
-                        "and tries to break it. Focus on edge cases, null inputs, boundary "
-                        "conditions, and unexpected usage. Your goal is to find bugs.\n\n"
-                        "Output ONLY the test script, no explanation. Use pytest for Python, "
-                        "jest/vitest for JS/TS.\n\n"
-                        "IMPORTANT: Real API credentials are available as environment variables "
-                        "in the test environment. Use them directly — do NOT mock or stub "
-                        "external API calls."
-                    ),
+                    "content": _TASK_TESTER_SYSTEM,
                 },
                 {
                     "role": "user",
@@ -122,13 +140,7 @@ def run_verification(diffs, tester, sandbox):
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are an adversarial test engineer. Given code changes, generate "
-                            "a test script that tries to break the code. Output ONLY the test "
-                            "script. Use pytest for Python, jest/vitest for JS/TS.\n\n"
-                            "IMPORTANT: Real API credentials are available as environment "
-                            "variables. Do NOT mock external API calls."
-                        ),
+                        "content": _DIFF_TESTER_SYSTEM,
                     },
                     {
                         "role": "user",

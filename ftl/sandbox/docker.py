@@ -129,8 +129,9 @@ class DockerSandbox(Sandbox):
     _standby_id = None
     _lock = threading.Lock()
 
-    def __init__(self, image=None):
+    def __init__(self, image=None, agent_name=None):
         self.image = image or _DEFAULT_IMAGE
+        self.agent_name = agent_name or "claude-code"
         self.container_id = None
         self.fresh = False  # True if boot() created a new container this session
         self._credentials = {}
@@ -218,9 +219,9 @@ class DockerSandbox(Sandbox):
         if self.fresh and setup_cmd:
             self._run_setup(setup_cmd)
 
-        # Pre-warm Node.js in the background — loads Claude Code modules into the
-        # Linux page cache so the first agent invocation doesn't pay cold-start cost.
-        threading.Thread(target=self._prewarm_node, daemon=True).start()
+        # Pre-warm the selected agent runtime in the background so first-task
+        # startup cost is paid before the user sees agent output.
+        threading.Thread(target=self._prewarm_agent, daemon=True).start()
 
         return self.container_id
 
@@ -348,14 +349,16 @@ class DockerSandbox(Sandbox):
         )
         return result
 
-    def _prewarm_node(self):
-        """Load Claude Code into the Linux page cache by running a no-op invocation.
+    def _prewarm_agent(self):
+        """Run the selected agent's lightweight warm-up command inside the sandbox."""
+        from ftl.agents import get_agent
 
-        Runs in a background thread during boot() so the first agent task doesn't
-        pay the Node.js cold-start penalty (~5-8s).
-        """
+        command = get_agent(self.agent_name).warmup_command()
+        if not command or not self.container_id:
+            return
+
         subprocess.run(
-            ["docker", "exec", "-u", "ftl", self.container_id, "sh", "-c", "claude --version"],
+            ["docker", "exec", "-u", "ftl", self.container_id, "sh", "-c", command],
             capture_output=True,
             timeout=30,
         )

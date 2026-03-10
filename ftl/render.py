@@ -37,6 +37,10 @@ class AgentRenderer:
             self._finish_tool()
             self.console.print(line, highlight=False)
             return
+        if not isinstance(event, dict):
+            self._finish_tool()
+            self.console.print(line, highlight=False)
+            return
         self._handle(event)
 
     def _handle(self, event):

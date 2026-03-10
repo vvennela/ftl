@@ -2,12 +2,16 @@ import base64
 import difflib
 import json
 import re
+import sys
+import threading
+import time
 from pathlib import Path
 import litellm
 litellm.suppress_debug_info = True
 litellm.set_verbose = False
 from rich.console import Console
 from rich.text import Text
+from ftl.render import AgentRenderer
 
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
@@ -398,21 +402,9 @@ def display_review(review, console=None):
         console.print()
 
 
-def ask_about_diff(question, sandbox, workspace):
-    """Ask the agent a question by continuing its conversation in the container."""
-    import shlex
-    import json
-    import sys
-    import threading
-    import time
-
+def ask_about_diff(question, sandbox, workspace, agent, context=None):
+    """Ask the active agent a review question inside the current sandbox."""
     console = Console()
-    escaped = shlex.quote(question)
-    cmd = (
-        f"cd {workspace} && claude -p {escaped} -c"
-        f" --output-format stream-json --verbose --dangerously-skip-permissions 2>/dev/null"
-    )
-
     console.print()
 
     # Animated thinking indicator — runs in a thread since exec_stream blocks
@@ -431,47 +423,36 @@ def ask_about_diff(question, sandbox, workspace):
 
     threading.Thread(target=_spinner, daemon=True).start()
 
-    def _parse(line):
-        line = line.strip()
-        if not line:
-            return
-        try:
-            data = json.loads(line)
-            # Streaming text tokens (word-by-word as claude generates)
-            if data.get("type") == "content_block_delta":
-                delta = data.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    if not received_text[0]:
-                        received_text[0] = True
-                        sys.stdout.write("\r" + " " * 20 + "\r")
-                        sys.stdout.flush()
-                    sys.stdout.write(delta["text"])
-                    sys.stdout.flush()
-            # Full message fallback if no deltas emitted
-            elif data.get("type") == "assistant" and not received_text[0]:
-                received_text[0] = True
-                sys.stdout.write("\r" + " " * 20 + "\r")
-                sys.stdout.flush()
-                for block in data.get("message", {}).get("content", []):
-                    if block.get("type") == "text":
-                        sys.stdout.write(block["text"])
-                        sys.stdout.flush()
-        except (json.JSONDecodeError, KeyError):
-            pass
+    renderer = AgentRenderer(console)
+
+    def _stream(line):
+        if not received_text[0]:
+            received_text[0] = True
+            sys.stdout.write("\r" + " " * 20 + "\r")
+            sys.stdout.flush()
+        renderer.feed(line)
 
     try:
-        sandbox.exec_stream(cmd, callback=_parse, timeout=300)
+        agent.continue_run(
+            question,
+            workspace,
+            sandbox,
+            callback=_stream,
+            context=context,
+        )
     except TimeoutError:
         console.print("[yellow]Agent didn't respond within 5 minutes.[/yellow]")
     except Exception:
-        console.print("[yellow]Could not reach agent. Is the sandbox still running?[/yellow]")
+        if not received_text[0]:
+            console.print("[yellow]Could not reach agent. Is the sandbox still running?[/yellow]")
     finally:
         stop_spinner[0] = True
+        renderer.finish()
 
     console.print("\n")
 
 
-def review_diff(diffs, sandbox, workspace, get_diffs=None):
+def review_diff(diffs, sandbox, workspace, agent, question_context=None, get_diffs=None):
     """Interactive diff review. User can approve, reject, or ask questions.
 
     get_diffs: optional callable that returns fresh diffs — used to detect
@@ -495,13 +476,15 @@ def review_diff(diffs, sandbox, workspace, get_diffs=None):
         if choice.lower() in ("r", "reject", "q", "quit", "exit"):
             return False
 
-        ask_about_diff(choice, sandbox, workspace)
+        ask_about_diff(choice, sandbox, workspace, agent, context=question_context)
 
         # If the question caused file changes, refresh and redisplay the diff
         if get_diffs is not None:
             fresh = get_diffs()
             if fresh != diffs:
                 diffs = fresh
+                if question_context is not None:
+                    question_context["diff_text"] = diff_to_text(fresh)
                 console.print()
                 console.print("[bold cyan]Files changed — updated diff:[/bold cyan]")
                 display_diff(diffs)
