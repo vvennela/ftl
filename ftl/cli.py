@@ -572,7 +572,13 @@ def shell():
         raise SystemExit(1)
 
     config = load_config()
-    console.print("[bold]FTL Shell[/bold]")
+    console.print("[bold blue]███████╗████████╗██╗[/bold blue]")
+    console.print("[bold blue]██╔════╝╚══██╔══╝██║[/bold blue]")
+    console.print("[bold blue]█████╗     ██║   ██║[/bold blue]")
+    console.print("[bold blue]██╔══╝     ██║   ██║[/bold blue]")
+    console.print("[bold blue]██║        ██║   ███████╗[/bold blue]")
+    console.print("[bold blue]╚═╝        ╚═╝   ╚══════╝[/bold blue]")
+    console.print()
     console.print(f"[dim]Agent: {config['agent']} | Tester: {config['tester']}[/dim]")
     console.print("[dim]Type a task to start. Commands: test, diff, merge, reject, list, restore <id>, exit[/dim]\n")
 
