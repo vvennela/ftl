@@ -10,7 +10,7 @@ class ClaudeCodeAgent(Agent):
     persistent_state_paths = ("/home/ftl/.claude/",)
 
     def run(self, task, workspace, sandbox, callback=None, context=None):
-        escaped = shlex.quote(task)
+        escaped = shlex.quote(self.prepare_task(task))
         if callback is not None:
             cmd = f"cd {workspace} && claude -p {escaped} {_FLAGS}"
             return sandbox.exec_stream(cmd, callback=callback, timeout=3600)
@@ -18,7 +18,7 @@ class ClaudeCodeAgent(Agent):
         return sandbox.exec(cmd, timeout=3600)
 
     def continue_run(self, task, workspace, sandbox, callback=None, context=None):
-        escaped = shlex.quote(task)
+        escaped = shlex.quote(task.strip())
         if callback is not None:
             cmd = f"cd {workspace} && claude -p {escaped} -c {_FLAGS}"
             return sandbox.exec_stream(cmd, callback=callback, timeout=3600)

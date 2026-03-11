@@ -1,5 +1,17 @@
 from abc import ABC, abstractmethod
 
+_ENGINEERING_POLICY = """\
+FTL engineering policy:
+- Solve the task with the smallest correct change.
+- Keep the diff proportional to the request; do not expand scope or refactor unrelated code.
+- Prefer editing existing code over adding new files, modules, classes, or layers.
+- Do not add new dependencies, helpers, or abstractions unless they are clearly necessary.
+- Follow the repository's existing conventions and architecture.
+- Write code that is easy for a human to read and review quickly.
+- Favor simple, well-organized functions that each do one sensible thing.
+- Avoid speculative future-proofing, cleanup, and aesthetic overengineering.
+"""
+
 
 class Agent(ABC):
     """Base interface for coding agent adapters.
@@ -37,3 +49,8 @@ class Agent(ABC):
     def setup_sandbox(self, sandbox):
         """Optional post-boot sandbox initialization for agent-specific state."""
         return None
+
+    def prepare_task(self, task):
+        """Apply FTL's shared engineering policy to a user task."""
+        task = task.strip()
+        return f"{task}\n\n{_ENGINEERING_POLICY}"

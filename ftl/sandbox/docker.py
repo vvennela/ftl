@@ -206,13 +206,7 @@ class DockerSandbox(Sandbox):
         # - shadow credentials (project secrets the agent sees as fake keys)
         # - agent auth (ANTHROPIC_API_KEY, etc. so the agent can call its own API)
         all_env = {**self._credentials, **self._agent_env}
-        if all_env:
-            env_lines = "\n".join(f"export {k}='{v}'" for k, v in all_env.items())
-            subprocess.run(
-                ["docker", "exec", self.container_id, "sh", "-c",
-                 f"cat > {ENV_FILE} << 'FTLEOF'\n{env_lines}\nFTLEOF"],
-                capture_output=True,
-            )
+        self._write_env_file(all_env)
 
         # Run setup command on fresh containers only — installs project deps that
         # will persist in /home/ftl/.local/ for the lifetime of this container.
@@ -225,11 +219,30 @@ class DockerSandbox(Sandbox):
 
         return self.container_id
 
+    def prepare(self, snapshot_path, credentials=None, agent_env=None, setup_cmd=None):
+        """Refresh the workspace and env inside an already-running container."""
+        if not self.container_id:
+            raise RuntimeError("Sandbox is not booted")
+
+        snapshot_path = Path(snapshot_path).resolve()
+        self._credentials = credentials or {}
+        self._agent_env = agent_env or {}
+        self._write_env_file({**self._credentials, **self._agent_env})
+        self._init_workspace(snapshot_path.name, wipe=True)
+
     def _with_env(self, cmd):
         """Prepend ENV_FILE sourcing if any credentials/agent env are configured."""
         if self._credentials or self._agent_env:
             return f". {ENV_FILE} && {cmd}"
         return cmd
+
+    def _write_env_file(self, all_env):
+        env_lines = "\n".join(f"export {k}='{v}'" for k, v in all_env.items())
+        subprocess.run(
+            ["docker", "exec", self.container_id, "sh", "-c",
+             f"cat > {ENV_FILE} << 'FTLEOF'\n{env_lines}\nFTLEOF"],
+            capture_output=True,
+        )
 
     def exec(self, command, timeout=DEFAULT_TIMEOUT):
         """Run a command inside the container with credentials sourced."""

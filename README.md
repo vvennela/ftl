@@ -135,13 +135,15 @@ FTL snapshots your project, boots the sandbox, runs the agent while generating t
 ── CREATED: payments.py ──
   + ...
 
-  [A]pprove  [R]eject  or ask a question
-  >
+  Review  1/2 files  |  +42 -3  |  2 new  0 changed  0 deleted
+  j/k or ↑/↓ move • i interactive ask • a accept • r reject • q keep coding
 ```
 
+- `j` / `k` or arrow keys — move between changed files in review
+- `i` — enter interactive ask mode and ask the agent a question about the diff
 - `a` — approve and merge changes to your project
 - `r` — reject and discard all changes
-- Any other input — ask the model a question about the diff (e.g. "does this handle null inputs?")
+- `q` — leave review and continue coding in the sandbox
 
 The **reviewer** runs in parallel with tests and produces three things before the raw diff: a plain-English summary of what changed in each file, any security findings (RCE, injection, unsafe deserialization, etc.), and a prompt adherence check — flagging if the agent modified files outside the scope of the task or shows signs of having been redirected by injected content in the codebase.
 
@@ -184,6 +186,8 @@ ftl[active]> reject   — discard all changes
 ```
 
 Follow-up instructions continue in the same container. Claude Code uses its native conversation-continue flow. Codex does not expose the same resume primitive, so FTL replays prior instructions plus the current unmerged diff to keep follow-up tasks coherent. No cold boot happens between tasks.
+
+The shell prewarms the sandbox up front, so the first task starts in an already-booted container instead of paying the full boot cost after you type.
 
 ---
 

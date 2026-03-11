@@ -50,7 +50,7 @@ def test_merge_blocks_unapproved_destructive_operations(monkeypatch):
     assert log_entries[0]["result"] == "rejected"
 
 
-def test_merge_uses_generic_warning_message_for_non_credential_lint(monkeypatch):
+def test_merge_uses_specific_warning_message_for_destructive_lint(monkeypatch):
     stream = io.StringIO()
     session = Session.__new__(Session)
     session.console = Console(file=stream, force_terminal=False, color_system=None)
@@ -91,4 +91,4 @@ def test_merge_uses_generic_warning_message_for_non_credential_lint(monkeypatch)
 
     Session.merge(session)
 
-    assert "Lint warnings detected" in stream.getvalue()
+    assert "Review warning: destructive operation detected" in stream.getvalue()

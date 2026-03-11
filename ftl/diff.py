@@ -1,6 +1,7 @@
 import base64
 import difflib
 import json
+import os
 import re
 import sys
 import threading
@@ -299,6 +300,129 @@ def display_diff(diffs):
     )
 
 
+def _diff_counts(diffs):
+    created = sum(1 for d in diffs if d["status"] == "created")
+    modified = sum(1 for d in diffs if d["status"] == "modified")
+    deleted = sum(1 for d in diffs if d["status"] == "deleted")
+    insertions = sum(1 for d in diffs for tag, _ in d["lines"] if tag == "+")
+    deletions = sum(1 for d in diffs for tag, _ in d["lines"] if tag == "-")
+    return {
+        "created": created,
+        "modified": modified,
+        "deleted": deleted,
+        "insertions": insertions,
+        "deletions": deletions,
+    }
+
+
+def _render_diff_block(console, diff):
+    status_colors = {"created": "green", "modified": "yellow", "deleted": "red"}
+    color = status_colors[diff["status"]]
+    console.print(f"[bold {color}]── {diff['status'].upper()}: {diff['path']}[/bold {color}]")
+    console.print()
+
+    for tag, content in diff["lines"]:
+        if tag == "+":
+            console.print(Text(f"  + {content}", style="green"))
+        elif tag == "-":
+            console.print(Text(f"  - {content}", style="red"))
+        else:
+            console.print(Text(f"    {content}", style="dim"))
+
+
+def _show_review_page(console, diffs, index, allow_continue=True, notice=None):
+    console.clear()
+    stats = _diff_counts(diffs)
+    current = diffs[index]
+
+    console.print(
+        f"[bold]Review[/bold]  [dim]{index + 1}/{len(diffs)} files[/dim]  |  "
+        f"[green]+{stats['insertions']}[/green] [red]-{stats['deletions']}[/red]  |  "
+        f"[green]{stats['created']} new[/green]  "
+        f"[yellow]{stats['modified']} changed[/yellow]  "
+        f"[red]{stats['deleted']} deleted[/red]"
+    )
+    console.print(
+        "[dim]j/k or ↑/↓ move • i interactive ask • a accept • r reject"
+        + (" • q keep coding" if allow_continue else "")
+        + "[/dim]"
+    )
+    if notice:
+        console.print(f"[cyan]{notice}[/cyan]")
+    console.print()
+    _render_diff_block(console, current)
+
+
+def _read_tty_key():
+    if os.name == "nt":
+        import msvcrt
+
+        first = msvcrt.getwch()
+        if first in ("\x00", "\xe0"):
+            second = msvcrt.getwch()
+            return {"H": "up", "P": "down"}.get(second, "")
+        return first
+
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        first = sys.stdin.read(1)
+        if first == "\x1b":
+            second = sys.stdin.read(1)
+            third = sys.stdin.read(1)
+            if second == "[":
+                return {"A": "up", "B": "down"}.get(third, "")
+            return ""
+        return first
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _read_review_action(allow_continue=True):
+    if sys.stdin.isatty():
+        key = _read_tty_key()
+        if key in ("j", "J", "down"):
+            return "next"
+        if key in ("k", "K", "up"):
+            return "prev"
+        if key in ("a", "A", "\r", "\n"):
+            return "approve"
+        if key in ("r", "R"):
+            return "reject"
+        if allow_continue and key in ("q", "Q"):
+            return "continue"
+        if key in ("i", "I"):
+            return "question"
+        return "noop"
+
+    choice = input("  action > ").strip()
+    if not choice:
+        return "noop"
+    lowered = choice.lower()
+    if lowered in ("j", "next", "n"):
+        return "next"
+    if lowered in ("k", "prev", "p", "previous"):
+        return "prev"
+    if lowered in ("a", "approve"):
+        return "approve"
+    if lowered in ("r", "reject"):
+        return "reject"
+    if allow_continue and lowered in ("q", "continue", "back"):
+        return "continue"
+    return ("question", choice)
+
+
+def _prompt_review_question():
+    try:
+        return input("  question > ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return ""
+
+
 _FENCE_RE = re.compile(r"^```\w*\n?(.*?)```$", re.DOTALL)
 
 _REVIEW_SYSTEM = """\
@@ -452,31 +576,51 @@ def ask_about_diff(question, sandbox, workspace, agent, context=None):
     console.print("\n")
 
 
-def review_diff(diffs, sandbox, workspace, agent, question_context=None, get_diffs=None):
-    """Interactive diff review. User can approve, reject, or ask questions.
+def review_diff(diffs, sandbox, workspace, agent, question_context=None, get_diffs=None,
+                allow_continue=True):
+    """Interactive diff review. User can approve, reject, continue, or ask questions.
 
     get_diffs: optional callable that returns fresh diffs — used to detect
     when the user's question caused code changes so the diff can be refreshed.
     """
     console = Console()
-    display_diff(diffs)
+    if not diffs:
+        return "reject"
+
+    index = 0
+    notice = None
 
     while True:
-        console.print()
-        console.print("[bold]  [A]pprove  [R]eject  [Q]uit  or ask a question[/bold]")
-        try:
-            choice = input("  > ").strip()
-        except (KeyboardInterrupt, EOFError):
-            return False
+        _show_review_page(console, diffs, index, allow_continue=allow_continue, notice=notice)
+        notice = None
+        action = _read_review_action(allow_continue=allow_continue)
 
-        if not choice:
+        if action == "noop":
             continue
-        if choice.lower() in ("a", "approve"):
-            return True
-        if choice.lower() in ("r", "reject", "q", "quit", "exit"):
-            return False
+        if action == "next":
+            index = (index + 1) % len(diffs)
+            continue
+        if action == "prev":
+            index = (index - 1) % len(diffs)
+            continue
+        if action == "approve":
+            return "approve"
+        if action == "reject":
+            return "reject"
+        if action == "continue":
+            return "continue"
 
-        ask_about_diff(choice, sandbox, workspace, agent, context=question_context)
+        if isinstance(action, tuple) and action[0] == "question":
+            question = action[1]
+        elif action == "question":
+            question = _prompt_review_question()
+        else:
+            question = ""
+
+        if not question:
+            continue
+
+        ask_about_diff(question, sandbox, workspace, agent, context=question_context)
 
         # If the question caused file changes, refresh and redisplay the diff
         if get_diffs is not None:
@@ -485,6 +629,5 @@ def review_diff(diffs, sandbox, workspace, agent, question_context=None, get_dif
                 diffs = fresh
                 if question_context is not None:
                     question_context["diff_text"] = diff_to_text(fresh)
-                console.print()
-                console.print("[bold cyan]Files changed — updated diff:[/bold cyan]")
-                display_diff(diffs)
+                index = min(index, len(diffs) - 1) if diffs else 0
+                notice = "Files changed — updated diff."

@@ -626,10 +626,11 @@ def shell():
 
     from ftl.snapshot import create_snapshot_store
     snapshot_store = create_snapshot_store(config)
-    session = None
+    session = Session()
+    session.preboot()
 
     while True:
-        prompt = "ftl[active]> " if session and session.is_active else "ftl> "
+        prompt = "ftl[active]> " if session and session.is_active and session.task else "ftl> "
         try:
             user_input = input(prompt).strip()
         except (KeyboardInterrupt, EOFError):
@@ -681,7 +682,7 @@ def shell():
             continue
 
         # Session commands (only when a session is active)
-        if session and session.is_active:
+        if session and session.is_active and session.task:
             if user_input == "test":
                 session.run_tests()
                 continue
@@ -691,13 +692,16 @@ def shell():
                 continue
 
             if user_input in ("merge", "done"):
-                session.merge()
-                session = None
+                session.merge(allow_continue=True)
+                if not session.is_active:
+                    session = Session()
+                    session.preboot()
                 continue
 
             if user_input == "reject":
                 session.reject()
-                session = None
+                session = Session()
+                session.preboot()
                 continue
 
             # Anything else is a follow-up message to the planner
@@ -705,7 +709,6 @@ def shell():
             continue
 
         # No active session — treat input as a new task
-        session = Session()
         session.start(user_input)
 
         console.print("\n[bold]Session active.[/bold] Commands: test, diff, merge, reject")

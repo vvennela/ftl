@@ -1,5 +1,6 @@
 from ftl.agents.claude_code import ClaudeCodeAgent
 from ftl.agents.codex import CodexAgent
+from ftl.agents.aider import AiderAgent
 
 
 class FakeSandbox:
@@ -41,6 +42,8 @@ def test_codex_follow_up_includes_session_context():
     assert "Current unmerged workspace diff" in command
     assert "validate_email(value)" in command
     assert "Add validation for blank email addresses." in command
+    assert "smallest correct change" in command
+    assert "one sensible thing" in command
 
 
 def test_agent_capabilities_and_warmup_commands():
@@ -69,3 +72,42 @@ def test_codex_bootstraps_login_from_openai_api_key():
     assert "codex login --with-api-key" in command
     assert "OPENAI_API_KEY" in command
     assert timeout == 120
+
+
+def test_claude_prepends_ftl_engineering_policy():
+    sandbox = FakeSandbox()
+    agent = ClaudeCodeAgent()
+
+    agent.run("Fix the login redirect.", "/workspace", sandbox)
+
+    _, command, _ = sandbox.calls[0]
+    assert "claude -p" in command
+    assert "Fix the login redirect." in command
+    assert "smallest correct change" in command
+    assert "one sensible thing" in command
+
+
+def test_claude_follow_up_uses_native_continue_without_repeating_policy():
+    sandbox = FakeSandbox()
+    agent = ClaudeCodeAgent()
+
+    agent.continue_run("Add a test for the redirect.", "/workspace", sandbox)
+
+    _, command, _ = sandbox.calls[0]
+    assert "claude -p" in command
+    assert " -c " in command
+    assert "Add a test for the redirect." in command
+    assert "smallest correct change" not in command
+
+
+def test_aider_prepends_ftl_engineering_policy():
+    sandbox = FakeSandbox()
+    agent = AiderAgent()
+
+    agent.run("Add a missing null check.", "/workspace", sandbox)
+
+    _, command, _ = sandbox.calls[0]
+    assert "aider --yes --no-git --message" in command
+    assert "Add a missing null check." in command
+    assert "smallest correct change" in command
+    assert "one sensible thing" in command

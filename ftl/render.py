@@ -1,14 +1,57 @@
-"""Rich terminal renderer for Claude Code's stream-json output.
+"""Terminal renderer for agent output.
 
-Parses newline-delimited JSON events from `claude -p --output-format stream-json`
-and displays per-tool progress with live elapsed-second counters, matching
-the look of Claude Code's own interactive UI.
+Claude emits newline-delimited JSON events, while other agents may emit plain
+text. This renderer normalizes both into a responsive streamed display with
+tool timing updates.
 """
 
+from collections import deque
 import json
+import re
 import sys
 import threading
 import time
+
+
+class TokenLagWriter:
+    """Render text in a fast token-by-token stream with a small trailing lag."""
+
+    _TOKEN_RE = re.compile(r"\S+\s*|\n")
+
+    def __init__(self, console, lag_tokens=15, cadence=0.004):
+        self.console = console
+        self.lag_tokens = lag_tokens
+        self.cadence = cadence
+        self._buffer = deque()
+        self._stream = getattr(console, "file", sys.stdout)
+        self._last_char = "\n"
+
+    def push(self, text):
+        if not text:
+            return
+        self._buffer.extend(self._tokenize(text))
+        while len(self._buffer) > self.lag_tokens:
+            self._emit(self._buffer.popleft(), delay=True)
+
+    def flush(self):
+        while self._buffer:
+            self._emit(self._buffer.popleft(), delay=False)
+
+    def _emit(self, token, delay):
+        self._stream.write(token)
+        self._stream.flush()
+        if token:
+            self._last_char = token[-1]
+        if delay:
+            time.sleep(self.cadence)
+
+    def _tokenize(self, text):
+        tokens = self._TOKEN_RE.findall(text)
+        return tokens or [text]
+
+    @property
+    def ends_on_newline(self):
+        return self._last_char == "\n"
 
 
 class AgentRenderer:
@@ -20,10 +63,16 @@ class AgentRenderer:
         renderer.finish()
     """
 
-    def __init__(self, console, trace_id=None):
+    def __init__(self, console, trace_id=None, stream_lag_tokens=15, stream_cadence=0.004):
         self.console = console
         self._active = None  # {label, t0, stop, thread}
         self._trace_id = trace_id
+        self._stream = getattr(console, "file", sys.stdout)
+        self._text = TokenLagWriter(
+            console,
+            lag_tokens=stream_lag_tokens,
+            cadence=stream_cadence,
+        )
 
     def feed(self, line):
         """Process one raw output line from the agent."""
@@ -35,11 +84,11 @@ class AgentRenderer:
         except json.JSONDecodeError:
             # Non-JSON line (e.g. agent stderr) — print directly
             self._finish_tool()
-            self.console.print(line, highlight=False)
+            self._text.push(line + "\n")
             return
         if not isinstance(event, dict):
             self._finish_tool()
-            self.console.print(line, highlight=False)
+            self._text.push(line + "\n")
             return
         self._handle(event)
 
@@ -53,7 +102,7 @@ class AgentRenderer:
                     text = block.get("text", "")
                     if text.strip():
                         self._finish_tool()
-                        self.console.print(text, highlight=False, end="")
+                        self._text.push(text)
                 elif bt == "tool_use":
                     self._finish_tool()
                     self._start_tool(block)
@@ -75,6 +124,7 @@ class AgentRenderer:
         return f"{name}: {detail}" if detail else name
 
     def _start_tool(self, block):
+        self._text.flush()
         label = self._label(block)
         stop = threading.Event()
         t0 = time.time()
@@ -82,8 +132,8 @@ class AgentRenderer:
         def _tick():
             while not stop.wait(timeout=1):
                 elapsed = int(time.time() - t0)
-                sys.stdout.write(f"\r  ◆ {label}  {elapsed}s")
-                sys.stdout.flush()
+                self._stream.write(f"\r  ◆ {label}  {elapsed}s")
+                self._stream.flush()
 
         thread = threading.Thread(target=_tick, daemon=True)
         thread.start()
@@ -92,10 +142,11 @@ class AgentRenderer:
     def _finish_tool(self):
         if not self._active:
             return
+        self._text.flush()
         self._active["stop"].set()
         elapsed = time.time() - self._active["t0"]
-        sys.stdout.write("\r\033[K")  # erase the live-counter line
-        sys.stdout.flush()
+        self._stream.write("\r\033[K")  # erase the live-counter line
+        self._stream.flush()
         self.console.print(f"  [dim]◆ {self._active['label']}  {elapsed:.1f}s[/dim]")
         if self._trace_id:
             from ftl import cloudwatch
@@ -106,3 +157,7 @@ class AgentRenderer:
     def finish(self):
         """Call after exec_stream returns to clean up any open tool state."""
         self._finish_tool()
+        self._text.flush()
+        if not self._text.ends_on_newline:
+            self._stream.write("\n")
+            self._stream.flush()

@@ -106,10 +106,11 @@ def test_review_diff_refreshes_context_after_agent_question(monkeypatch):
         ),
     )
 
-    responses = iter(["What changed?", "a"])
-    monkeypatch.setattr("builtins.input", lambda _: next(responses))
+    actions = iter(["question", "approve"])
+    monkeypatch.setattr(diff_mod, "_read_review_action", lambda allow_continue=True: next(actions))
+    monkeypatch.setattr(diff_mod, "_prompt_review_question", lambda: "What changed?")
 
-    approved = diff_mod.review_diff(
+    decision = diff_mod.review_diff(
         initial,
         sandbox=object(),
         workspace="/workspace",
@@ -118,7 +119,22 @@ def test_review_diff_refreshes_context_after_agent_question(monkeypatch):
         get_diffs=lambda: updated,
     )
 
-    assert approved is True
+    assert decision == "approve"
     assert asked[0]["agent"] == "codex-agent"
     assert asked[0]["question"] == "What changed?"
     assert context["diff_text"] == diff_mod.diff_to_text(updated)
+
+
+def test_review_diff_can_return_continue(monkeypatch):
+    diffs = [{"path": "app.py", "status": "created", "lines": [("+", "first")]}]
+
+    monkeypatch.setattr(diff_mod, "_read_review_action", lambda allow_continue=True: "continue")
+
+    decision = diff_mod.review_diff(
+        diffs,
+        sandbox=object(),
+        workspace="/workspace",
+        agent="codex-agent",
+    )
+
+    assert decision == "continue"

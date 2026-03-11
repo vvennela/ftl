@@ -33,15 +33,25 @@ class FakeAgent:
         return 0, "agent output\n", ""
 
 
+class FakeSandbox:
+    def __init__(self, diffs):
+        self.diffs = list(diffs)
+
+    def get_diff(self, snapshot_path):
+        return list(self.diffs)
+
+
 def test_session_follow_up_passes_agent_context(monkeypatch):
+    stream = io.StringIO()
     session = Session.__new__(Session)
-    session.console = Console(file=io.StringIO(), force_terminal=False, color_system=None)
+    session.console = Console(file=stream, force_terminal=False, color_system=None)
     session.trace_id = "trace1234"
     session.agent = FakeAgent()
-    session.sandbox = object()
+    session.sandbox = FakeSandbox([{"path": "tests.py", "status": "created", "lines": [("+", "assert True")]}])
     session.workspace = "/workspace"
     session.agent_calls = 0
     session.history = ["Build a login form."]
+    session.snapshot_path = "/tmp/snapshot"
     session.diffs = []
     session._review = {"summary": "old review"}
     session._agent_context = lambda: {
@@ -58,5 +68,33 @@ def test_session_follow_up_passes_agent_context(monkeypatch):
     assert session.agent.calls[0]["context"]["diff_text"] == "--- CREATED: app.py ---"
     assert session.history == ["Build a login form.", "Add tests."]
     assert session.agent_calls == 1
-    assert session.diffs is None
+    assert session.diffs == [{"path": "tests.py", "status": "created", "lines": [("+", "assert True")]}]
     assert session._review is None
+    output = stream.getvalue()
+    assert "Updated 1 file: tests.py" in output
+    assert "Tests and review are stale" in output
+
+
+def test_session_follow_up_reports_no_file_changes(monkeypatch):
+    stream = io.StringIO()
+    session = Session.__new__(Session)
+    session.console = Console(file=stream, force_terminal=False, color_system=None)
+    session.trace_id = "trace1234"
+    session.agent = FakeAgent()
+    session.sandbox = FakeSandbox([])
+    session.workspace = "/workspace"
+    session.agent_calls = 0
+    session.history = ["Build a login form."]
+    session.snapshot_path = "/tmp/snapshot"
+    session.diffs = []
+    session._review = {"summary": "old review"}
+    session._agent_context = lambda: {
+        "history": ["Build a login form."],
+        "diff_text": "",
+    }
+
+    monkeypatch.setattr("ftl.orchestrator.AgentRenderer", FakeRenderer)
+
+    Session.follow_up(session, "Run the app.")
+
+    assert "No file changes from that instruction." in stream.getvalue()

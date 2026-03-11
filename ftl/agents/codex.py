@@ -28,11 +28,11 @@ class CodexAgent(Agent):
             summary.append(diff_text)
 
         summary.append("Continue from that state and apply this instruction:")
-        summary.append(task)
+        summary.append(task.strip())
         return "\n\n".join(summary)
 
     def run(self, task, workspace, sandbox, callback=None, context=None):
-        escaped = shlex.quote(task)
+        escaped = shlex.quote(self.prepare_task(task))
         cmd = f"cd {workspace} && codex exec {escaped} {_FLAGS}"
         if callback is not None:
             return sandbox.exec_stream(cmd, callback=callback, timeout=3600)

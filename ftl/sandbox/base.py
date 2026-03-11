@@ -34,6 +34,11 @@ class Sandbox(ABC):
         pass
 
     @abstractmethod
+    def prepare(self, snapshot_path, credentials=None, agent_env=None, setup_cmd=None):
+        """Refresh an already-booted sandbox from a new snapshot and env payload."""
+        pass
+
+    @abstractmethod
     def destroy(self):
         """Tear down the sandbox and clean up resources."""
         pass

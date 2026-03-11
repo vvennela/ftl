@@ -7,7 +7,7 @@ class AiderAgent(Agent):
     supports_structured_stream = False
 
     def run(self, task, workspace, sandbox, callback=None, context=None):
-        escaped = shlex.quote(task)
+        escaped = shlex.quote(self.prepare_task(task))
         # --yes auto-confirms all prompts; --no-git lets FTL own the diffing
         cmd = f"cd {workspace} && aider --yes --no-git --message {escaped}"
         if callback is not None:
