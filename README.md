@@ -8,10 +8,10 @@
 
 ```bash
 pip install -e .
-ftl setup          # pull sandbox image, pick agent + tester, save API key
+ftl setup              # pick agent, pull sandbox image, save API key
 cd your-project
-ftl init           # create .ftlconfig
-ftl code 'your task here'
+ftl init
+ftl code 'your task'
 ```
 
 ---
@@ -63,7 +63,7 @@ pip install -e .
 ftl setup
 ```
 
-Pulls the sandbox image from Docker Hub, asks which agent and tester/reviewer models you want, and saves the credential required by that agent:
+Pulls the sandbox image from Docker Hub, picks a smart default tester model for your agent, and saves the credential required:
 
 ```
 Which agent do you want to use?
@@ -72,19 +72,17 @@ Which agent do you want to use?
   3. Aider        (open-source)
   Choice [1]:
 
-Which provider for test generation?
-  1. Anthropic     (e.g. claude-haiku-4-5-20251001)
-  2. OpenAI        (e.g. gpt-4o-mini)
-  3. Ollama        (e.g. ollama/llama3  — local, no key needed)
-  4. AWS Bedrock   (e.g. bedrock/us.anthropic.claude-haiku-4-5-20251001)
-  5. Other         (any LiteLLM-compatible string)
-  Choice [4]:
-Model: bedrock/us.anthropic.claude-haiku-4-5-20251001
+ANTHROPIC_API_KEY: ****
 
-Use the same model for the reviewer? [Y/n]:
+Tester / reviewer model  (runs tests and reviews diffs)
+  Default: claude-haiku-4-5-20251001
+  Customize? [y/N]:
+
+Setup complete.
+  Next: cd your-project && ftl code 'your task'
 ```
 
-Both tester and reviewer accept any [LiteLLM-compatible](https://docs.litellm.ai/docs/providers) model string. Ollama and AWS Bedrock require no API key at this step.
+The tester default matches your agent's provider — Anthropic → `claude-haiku-4-5-20251001`, OpenAI → `gpt-4o-mini`. Press Enter to accept it or `y` to pick any [LiteLLM-compatible](https://docs.litellm.ai/docs/providers) model string. The reviewer is always set to the same model as the tester — change it later in `.ftlconfig` if needed.
 
 Your choices are saved globally to `~/.ftl/config.json` and used as defaults for every new project. Credentials are saved to `~/.ftl/credentials` and loaded automatically on every invocation — no need to `export` each session.
 
@@ -108,8 +106,8 @@ Creates `.ftlconfig` in your project root:
 ```json
 {
   "agent": "claude-code",
-  "tester": "bedrock/us.anthropic.claude-haiku-4-5-20251001",
-  "reviewer": "bedrock/us.anthropic.claude-haiku-4-5-20251001"
+  "tester": "claude-haiku-4-5-20251001",
+  "reviewer": "claude-haiku-4-5-20251001"
 }
 ```
 
@@ -296,9 +294,9 @@ The agent writes code using these shadow values. Your real `.env` never enters t
 - Hardcoded shadow values (`ftl_shadow_*` pattern or exact match)
 - Known credential patterns: Stripe live/test keys, Anthropic keys, AWS access keys, GitHub PATs, GitLab tokens, Slack tokens, SendGrid keys
 - Dangerous SQL: `DROP TABLE`, `DROP DATABASE`, `DROP SCHEMA`, `TRUNCATE`, `DELETE FROM` without `WHERE`
-- Dangerous shell: `rm -rf`, `rm -fr`, `shred`, `dd if=`, `chmod -R 777`, truncating `/dev/`
+- Dangerous shell: `rm -rf`, `rm -fr`, `shred`, `dd if=`, truncating `/dev/`
 
-Credential findings and dangerous operation warnings are displayed separately — all advisory, never a hard block (unless Bedrock Guardrails is configured).
+Credential findings are always advisory. Dangerous operation findings are **blocking by default** — if the diff contains destructive operations (DROP TABLE, rm -rf, etc.) that were not explicitly requested in the task, merge is hard-blocked. If the task description clearly asks for the destructive behavior, violations are downgraded to warnings and the merge proceeds to review. Bedrock Guardrails replaces the local lint scan when `guardrail_id` is configured.
 
 ### Network Proxy (optional)
 

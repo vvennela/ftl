@@ -58,8 +58,7 @@ def code(task):
     Example: ftl code "create login component"
     """
     if not find_config():
-        click.echo("No .ftlconfig found. Run 'ftl init' first.")
-        raise SystemExit(1)
+        init_config()
     run_task(task)
 
 
@@ -299,6 +298,22 @@ _PROVIDER_CHOICES = [
 ]
 
 
+# Default tester model per agent — same provider, cheapest capable model.
+# Shown as the pre-filled default in setup; user can override with Customize.
+_AGENT_DEFAULT_TESTER = {
+    "claude-code": "claude-haiku-4-5-20251001",
+    "codex":       "gpt-4o-mini",
+    "aider":       "gpt-4o-mini",
+}
+
+# API key needed for the default tester model (None = no key, e.g. Bedrock/Ollama).
+_AGENT_DEFAULT_TESTER_KEY = {
+    "claude-code": "ANTHROPIC_API_KEY",
+    "codex":       "OPENAI_API_KEY",
+    "aider":       "OPENAI_API_KEY",
+}
+
+
 def _pull_or_build(console, hub_tag, local_agents):
     """Pull ftlhq/ftl-sandbox:<hub_tag> from Docker Hub, tag as ftl-sandbox locally.
     Falls back to a local build (base Dockerfile + agent layers) if pull fails.
@@ -442,26 +457,32 @@ def setup():
     console.print()
     _ensure_agent_credential(console, chosen_agent_key)
 
-    # 4. Tester model
+    # 4. Tester + reviewer model
     console.print()
     saved_keys = {
         prompt["key"]
         for prompt in _AGENT_AUTH_PROMPTS.values()
         if _has_saved_credential(prompt["key"])
     }
-    tester_model, saved_keys = _prompt_model(console, "tester", saved_keys)
-    save_global_config({"tester": tester_model})
-
-    # 5. Reviewer model (can reuse tester)
-    console.print()
-    reuse = click.confirm("  Use the same model for the reviewer?", default=True)
-    if reuse:
-        reviewer_model = tester_model
-        console.print(f"  [green]Reviewer: {reviewer_model}[/green]")
+    default_tester = _AGENT_DEFAULT_TESTER.get(chosen_agent_key, "")
+    if default_tester:
+        console.print(f"[bold]Tester / reviewer model[/bold]  [dim](runs tests and reviews diffs)[/dim]")
+        console.print(f"  Default: [cyan]{default_tester}[/cyan]")
+        if click.confirm("  Customize?", default=False):
+            tester_model, saved_keys = _prompt_model(console, "tester", saved_keys)
+        else:
+            tester_model = default_tester
+            console.print(f"  [green]Using {tester_model}[/green]")
+            default_key = _AGENT_DEFAULT_TESTER_KEY.get(chosen_agent_key)
+            if default_key and not _has_saved_credential(default_key):
+                val = click.prompt(f"  {default_key}", hide_input=True, default="", show_default=False)
+                if val.strip():
+                    save_ftl_credential(default_key, val.strip())
+                    console.print(f"  [green]{default_key} saved.[/green]")
+                    saved_keys.add(default_key)
     else:
-        console.print()
-        reviewer_model, saved_keys = _prompt_model(console, "reviewer", saved_keys)
-    save_global_config({"reviewer": reviewer_model})
+        tester_model, saved_keys = _prompt_model(console, "tester", saved_keys)
+    save_global_config({"tester": tester_model, "reviewer": tester_model})
 
     # 6. Done
     console.print()
@@ -609,8 +630,12 @@ def shell():
     console = Console()
 
     if not find_config():
-        console.print("[red]No .ftlconfig found. Run 'ftl init' first.[/red]")
-        raise SystemExit(1)
+        console.print("[yellow]No .ftlconfig found in this directory.[/yellow]")
+        if click.confirm("  Initialize FTL here?", default=True):
+            config_path = init_config()
+            console.print(f"  [green]Created {config_path}[/green]\n")
+        else:
+            raise SystemExit(0)
 
     config = load_config()
     console.print("Welcome to...")
