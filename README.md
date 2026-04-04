@@ -1,8 +1,24 @@
-# FTL
+<h1 align="center">FTL 🚀</h1>
 
-**Zero-trust control plane for AI coding agents.** Run Claude Code, Codex, or Aider inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval — without ever giving the agent access to your real secrets or filesystem.
+<p align="center"><strong>Zero-trust control plane for AI coding agents.</strong></p>
+
+<p align="center">Run Claude Code, Codex, or Aider inside an isolated Docker sandbox with shadow credentials, parallel adversarial testing, and human-in-the-loop approval.</p>
+
+<p align="center">Your agent gets real work done. It does not get your real secrets, direct filesystem access, or automatic merge power.</p>
 
 ---
+
+## Why FTL
+
+Most agent wrappers optimize for convenience first and safety later. FTL is built for the opposite case: you want the speed of Claude Code or Codex, but you do not want to hand an autonomous coding tool your machine, your credentials, and unchecked write access.
+
+With FTL:
+
+- Your agent runs inside Docker, not on your host
+- Real credentials stay outside the sandbox
+- Tests and review happen before merge
+- Destructive operations and leaked secrets are flagged before approval
+- The human stays in control of what lands in the repo
 
 ## Quickstart
 
@@ -14,28 +30,14 @@ ftl init
 ftl code 'your task'
 ```
 
----
+If you just want the mental model:
 
-## How It Works
+1. `ftl init` adds a small project config
+2. `ftl code 'build X'` snapshots your repo and starts the sandbox
+3. The agent writes code while tests and review run in parallel
+4. You inspect the diff and choose what gets merged
 
-```
-ftl code "build login component with Supabase auth"
-```
-
-```
-1. SNAPSHOT        — rsync project state to ~/.ftl/snapshots/<id>
-2. BOOT            — reuse persistent container or start fresh (per project)
-3. INJECT          — shadow credentials replace real keys inside sandbox
-4. AGENT ∥ TESTS   — coding agent runs; adversarial tests generate in parallel
-5. RUN TESTS       — pre-generated tests execute the moment the agent finishes
-   ∥ REVIEW        — reviewer runs in parallel: change summary, security scan,
-                      prompt adherence check (did the agent follow the task?)
-6. LINT            — diff scanned for credentials and dangerous operations
-7. DIFF            — computed on demand; file-level review of all changes
-8. APPROVE         — human reviews summary + findings, asks questions, merges or rejects
-```
-
-The agent runs entirely inside Docker. It never sees your real API keys or your host filesystem. Nothing touches your project without explicit approval.
+The result is an agent workflow that still feels fast, but is much harder to misuse accidentally.
 
 ---
 
@@ -437,6 +439,56 @@ Every `litellm.completion()` call (tester, diff review, Q&A) is traced automatic
 | `/home/ftl/.codex/` | Persists | Codex auth and session state |
 
 **Agent warm start:** On every boot, FTL prewarms the selected agent runtime in the background (`claude --version`, `codex --version`, etc.) so the first task pays less startup cost.
+
+---
+
+## How It Works
+
+```
+ftl code "build login component with Supabase auth"
+```
+
+```
+1. SNAPSHOT        — rsync project state to ~/.ftl/snapshots/<id>
+2. BOOT            — reuse persistent container or start fresh (per project)
+3. INJECT          — shadow credentials replace real keys inside sandbox
+4. AGENT ∥ TESTS   — coding agent runs; adversarial tests generate in parallel
+5. RUN TESTS       — pre-generated tests execute the moment the agent finishes
+   ∥ REVIEW        — reviewer runs in parallel: change summary, security scan,
+                      prompt adherence check (did the agent follow the task?)
+6. LINT            — diff scanned for credentials and dangerous operations
+7. DIFF            — computed on demand; file-level review of all changes
+8. APPROVE         — human reviews summary + findings, asks questions, merges or rejects
+```
+
+The agent runs entirely inside Docker. It never sees your real API keys or your host filesystem. Nothing touches your project without explicit approval.
+
+---
+
+## Benchmarking
+
+FTL's safety layer is effectively free in normal dev workflows. On benchmarked edit tasks, total overhead was **~60ms per task** for agent-driven work, or about **3.0%** wall-clock overhead:
+
+| Task | Without FTL | With FTL | FTL Overhead |
+|---|---|---|---|
+| Create 50-line file | 2.00s | 2.06s | 0.06s |
+| Modify 5 files | 2.01s | 2.07s | 0.06s |
+| Create 10 files | 2.01s | 2.07s | 0.06s |
+
+The underlying pipeline operations are also cheap. Medium-scale snapshots (100 files) averaged **31.7ms**, diff computation averaged **9.9ms**, and merge preparation averaged **16.0ms** across 5 runs. Docker warm execution averaged **55.7ms**.
+
+The benchmark run also showed that the protection mechanisms are not coming at the cost of quality:
+
+- Shadow credential detection: **100.0%** (`46/46` secrets across 20 `.env` format cases)
+- Shadow credential uniqueness: **1000/1000 unique values**, **0 collisions**
+- Credential linter detection: **90.9%** (`10/11`) with **0.0% false positives** (`0/20`)
+- Destructive command detection: **100.0%** (`13/13`)
+- Snapshot, shadow-map, and linter reliability: **100.0% success** across 20 repeated runs
+- Container isolation: **0** unexpectedly accessible sensitive host paths
+
+In practice, that means you get sandboxing, credential shadowing, destructive-op blocking, and pre-merge review for roughly the cost of a few dozen milliseconds, which is below the threshold most developers will notice during an agent-driven edit loop.
+
+Full benchmark artifacts live in `ftl_benchmarks.json` and `ftl_benchmarks_summary.md`.
 
 ---
 
