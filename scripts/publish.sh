@@ -18,6 +18,8 @@ set -euo pipefail
 REGISTRY="vvenne/ftl"
 PLATFORMS="linux/amd64,linux/arm64"
 BUILDER="ftl-builder"
+CLAUDE_CODE_VERSION="2.1.92"
+CODEX_VERSION="0.118.0"
 
 # Ensure a multi-platform builder exists
 if ! docker buildx inspect "$BUILDER" &>/dev/null; then
@@ -29,12 +31,13 @@ fi
 echo "==> Building $REGISTRY:latest (claude-code only)"
 docker buildx build \
   --platform "$PLATFORMS" \
+  --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION" \
   --tag "$REGISTRY:latest" \
   --push \
   .
 
 # Agent Dockerfile snippets
-CODEX_LAYER="RUN npm install -g @openai/codex && npm cache clean --force"
+CODEX_LAYER="RUN npm install -g @openai/codex@$CODEX_VERSION && npm cache clean --force"
 
 AIDER_LAYER="RUN pip3 install --break-system-packages aider-chat"
 

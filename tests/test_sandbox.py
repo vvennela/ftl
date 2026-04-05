@@ -10,7 +10,6 @@ def test_create_sandbox_keeps_selected_agent():
     assert isinstance(sandbox, DockerSandbox)
     assert sandbox.agent_name == "codex"
 
-
 def test_docker_sandbox_prewarms_selected_agent(monkeypatch):
     calls = []
     sandbox = DockerSandbox(image="image", agent_name="codex")

@@ -1,6 +1,7 @@
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG CLAUDE_CODE_VERSION=2.1.92
 
 # System deps in one layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +17,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && npm cache clean --force
 
 # TypeScript + React tooling + Claude Code + Jest (base image — agents added by ftl setup)
-RUN npm install -g typescript ts-node create-react-app @anthropic-ai/claude-code jest \
+RUN npm install -g typescript ts-node create-react-app @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} jest \
     && npm cache clean --force
 
 # Python 3.11 (ships with bookworm) + pip + venv
