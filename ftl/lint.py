@@ -2,6 +2,7 @@
 
 import ast
 import re
+from pathlib import Path
 from rich.console import Console
 
 # Matches ftl_shadow_<name>_<hex> — agent should never hardcode these
@@ -64,6 +65,16 @@ _JS_FS_DELETE_PATTERNS = [
     (re.compile(r"\b\w+\.rm\s*\("), "Destructive filesystem delete: fs/promises rm"),
     (re.compile(r"\b\w+\.rmdir\s*\("), "Destructive filesystem delete: fs/promises rmdir"),
     (re.compile(r"\brimraf\s*\("), "Destructive filesystem delete: rimraf"),
+]
+_GO_FILE_DELETE_PATTERNS = [
+    (re.compile(r"\bos\.(Remove|RemoveAll)\s*\("), "Destructive filesystem delete: Go os.Remove"),
+]
+_JAVA_FILE_DELETE_PATTERNS = [
+    (re.compile(r"\bFiles\.delete(?:IfExists)?\s*\("), "Destructive filesystem delete: Java Files.delete"),
+    (re.compile(r"\b\w+\.delete\s*\("), "Destructive filesystem delete: Java File.delete"),
+]
+_CPP_FILE_DELETE_PATTERNS = [
+    (re.compile(r"\bstd::filesystem::remove(?:_all)?\s*\("), "Destructive filesystem delete: C++ filesystem remove"),
 ]
 _FILE_DELETE_FUNCS = {
     "os.remove": "Destructive filesystem delete: os.remove",
@@ -303,6 +314,48 @@ def _js_ts_destructive_violations(diff, task):
     return violations
 
 
+def _go_java_cpp_destructive_violations(diff, task):
+    path = diff["path"]
+    ext = Path(path).suffix.lower()
+    patterns = {
+        ".go": _GO_FILE_DELETE_PATTERNS,
+        ".java": _JAVA_FILE_DELETE_PATTERNS,
+        ".cc": _CPP_FILE_DELETE_PATTERNS,
+        ".cpp": _CPP_FILE_DELETE_PATTERNS,
+        ".cxx": _CPP_FILE_DELETE_PATTERNS,
+        ".hpp": _CPP_FILE_DELETE_PATTERNS,
+        ".h": _CPP_FILE_DELETE_PATTERNS,
+    }.get(ext)
+    if not patterns:
+        return []
+
+    source = _new_file_text(diff)
+    violations = []
+    lines = source.splitlines()
+    seen = set()
+
+    for match, reason in patterns:
+        for found in match.finditer(source):
+            line_num = source[:found.start()].count("\n") + 1
+            if line_num in seen:
+                continue
+            seen.add(line_num)
+            line = lines[line_num - 1] if lines else ""
+            allowed = _task_allows_destructive(task, "file")
+            violations.append(
+                LintViolation(
+                    path,
+                    line_num,
+                    line,
+                    reason,
+                    severity="warn" if allowed else "block",
+                    blocking=not allowed,
+                )
+            )
+
+    return violations
+
+
 def lint_diffs(diffs, shadow_env=None, task=""):
     """Scan diffs for credential leaks and destructive operations."""
     violations = []
@@ -361,6 +414,7 @@ def lint_diffs(diffs, shadow_env=None, task=""):
 
         violations.extend(_ast_destructive_violations(diff, task))
         violations.extend(_js_ts_destructive_violations(diff, task))
+        violations.extend(_go_java_cpp_destructive_violations(diff, task))
         if not path.endswith(".py") and not path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
             violations.extend(_line_based_destructive_violations(diff, task))
 

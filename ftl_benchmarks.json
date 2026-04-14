@@ -1,0 +1,325 @@
+{
+  "timestamp": "2026-04-11T20:49:50.181031Z",
+  "ftl_version": "0.1.0",
+  "python_version": "3.13.1",
+  "platform": "macOS-26.2-arm64-arm-64bit-Mach-O",
+  "results": {
+    "snapshot_creation": {
+      "small": {
+        "mean_ms": 9.12,
+        "min_ms": 8.55,
+        "max_ms": 10.29,
+        "p95_ms": 10.29,
+        "runs": 5
+      },
+      "medium": {
+        "mean_ms": 25.98,
+        "min_ms": 25.58,
+        "max_ms": 26.63,
+        "p95_ms": 26.63,
+        "runs": 5
+      },
+      "large": {
+        "mean_ms": 224.65,
+        "min_ms": 205.62,
+        "max_ms": 234.91,
+        "p95_ms": 234.91,
+        "runs": 5
+      }
+    },
+    "shadow_injection": {
+      "small": {
+        "mean_ms": 0.14,
+        "min_ms": 0.1,
+        "max_ms": 0.23,
+        "p95_ms": 0.23,
+        "runs": 5
+      },
+      "medium": {
+        "mean_ms": 0.26,
+        "min_ms": 0.26,
+        "max_ms": 0.28,
+        "p95_ms": 0.28,
+        "runs": 5
+      },
+      "large": {
+        "mean_ms": 0.5,
+        "min_ms": 0.49,
+        "max_ms": 0.52,
+        "p95_ms": 0.52,
+        "runs": 5
+      }
+    },
+    "shadow_uniqueness": {
+      "runs": 1000,
+      "collisions": 0,
+      "unique": 1000
+    },
+    "shadow_format": {
+      "total": 100,
+      "conforming": 100,
+      "rate": 1.0
+    },
+    "credential_detection": {
+      "detected": 24,
+      "total": 24,
+      "rate": 1.0
+    },
+    "linter_detection": {
+      "detected": 7,
+      "total": 10,
+      "rate": 0.7
+    },
+    "linter_false_positives": {
+      "flagged": 0,
+      "total": 20,
+      "rate": 0.0
+    },
+    "destructive_detection": {
+      "detected": 9,
+      "total": 10,
+      "rate": 0.9
+    },
+    "local_diff_computation": {
+      "small": {
+        "mean_ms": 1.19,
+        "min_ms": 0.99,
+        "max_ms": 1.65,
+        "p95_ms": 1.65,
+        "runs": 5
+      },
+      "medium": {
+        "mean_ms": 8.65,
+        "min_ms": 7.46,
+        "max_ms": 11.01,
+        "p95_ms": 11.01,
+        "runs": 5
+      },
+      "large": {
+        "mean_ms": 96.76,
+        "min_ms": 82.59,
+        "max_ms": 143.46,
+        "p95_ms": 143.46,
+        "runs": 5
+      }
+    },
+    "real_docker_pipeline": {
+      "available": true,
+      "cold_boot_first_sample_ms": 1845.42,
+      "cold_boot_ms": {
+        "mean_ms": 611.14,
+        "min_ms": 282.73,
+        "max_ms": 1845.42,
+        "runs": 5,
+        "samples_ms": [
+          1845.42,
+          286.43,
+          331.43,
+          309.67,
+          282.73
+        ]
+      },
+      "cold_boot_steady_ms": {
+        "mean_ms": 302.57,
+        "min_ms": 282.73,
+        "max_ms": 331.43,
+        "runs": 4,
+        "samples_ms": [
+          286.43,
+          331.43,
+          309.67,
+          282.73
+        ]
+      },
+      "warm_exec_ms": {
+        "mean_ms": 66.33,
+        "min_ms": 59.44,
+        "max_ms": 72.18,
+        "runs": 5,
+        "samples_ms": [
+          66.9,
+          72.18,
+          66.34,
+          59.44,
+          66.78
+        ]
+      },
+      "prepare_ms": {
+        "mean_ms": 134.27,
+        "min_ms": 119.05,
+        "max_ms": 158.6,
+        "runs": 5,
+        "samples_ms": [
+          124.31,
+          124.8,
+          144.61,
+          119.05,
+          158.6
+        ]
+      },
+      "diff_no_change_ms": {
+        "mean_ms": 138.4,
+        "min_ms": 126.04,
+        "max_ms": 171.15,
+        "runs": 5,
+        "samples_ms": [
+          171.15,
+          126.04,
+          127.79,
+          126.59,
+          140.43
+        ]
+      },
+      "diff_no_change_steady_ms": {
+        "mean_ms": 130.21,
+        "min_ms": 126.04,
+        "max_ms": 140.43,
+        "runs": 4,
+        "samples_ms": [
+          126.04,
+          127.79,
+          126.59,
+          140.43
+        ]
+      },
+      "diff_changed_ms": {
+        "mean_ms": 95.87,
+        "min_ms": 89.16,
+        "max_ms": 103.91,
+        "runs": 5,
+        "samples_ms": [
+          91.73,
+          98.62,
+          95.94,
+          89.16,
+          103.91
+        ]
+      },
+      "warm_task_prepare_edit_diff_ms": {
+        "mean_ms": 291.44,
+        "min_ms": 277.37,
+        "max_ms": 312.29,
+        "runs": 5,
+        "samples_ms": [
+          283.38,
+          277.37,
+          293.72,
+          312.29,
+          290.46
+        ]
+      }
+    },
+    "merge_time": {
+      "small": {
+        "mean_ms": 1.99,
+        "min_ms": 1.64,
+        "max_ms": 2.52,
+        "p95_ms": 2.52,
+        "runs": 5
+      },
+      "medium": {
+        "mean_ms": 2.19,
+        "min_ms": 2.1,
+        "max_ms": 2.45,
+        "p95_ms": 2.45,
+        "runs": 5
+      },
+      "large": {
+        "mean_ms": 11.18,
+        "min_ms": 10.5,
+        "max_ms": 12.97,
+        "p95_ms": 12.97,
+        "runs": 5
+      }
+    },
+    "docker": {
+      "available": true,
+      "image_size": "1.96GB",
+      "cold_boot_ms": {
+        "mean_ms": 102.22,
+        "min_ms": 87.23,
+        "max_ms": 121.67,
+        "runs": 3
+      },
+      "warm_exec_ms": {
+        "mean_ms": 66.86,
+        "min_ms": 51.76,
+        "max_ms": 77.78,
+        "runs": 5
+      },
+      "idle_ram": "600KiB / 3.826GiB"
+    },
+    "credential_exposure": {
+      "locations": [
+        "ftl/credentials.py:70",
+        "ftl/credentials.py:76",
+        "ftl/credentials.py:84",
+        "ftl/credentials.py:88",
+        "ftl/credentials.py:89",
+        "ftl/credentials.py:91",
+        "ftl/credentials.py:99",
+        "ftl/credentials.py:101",
+        "ftl/credentials.py:104",
+        "ftl/credentials.py:106",
+        "ftl/credentials.py:109",
+        "ftl/credentials.py:111",
+        "ftl/orchestrator.py:30",
+        "ftl/orchestrator.py:31",
+        "ftl/orchestrator.py:35",
+        "ftl/orchestrator.py:39",
+        "ftl/orchestrator.py:183",
+        "ftl/orchestrator.py:184",
+        "ftl/orchestrator.py:187",
+        "ftl/orchestrator.py:192",
+        "ftl/orchestrator.py:199",
+        "ftl/orchestrator.py:202",
+        "ftl/orchestrator.py:225",
+        "ftl/orchestrator.py:272",
+        "ftl/orchestrator.py:274",
+        "ftl/orchestrator.py:300",
+        "ftl/orchestrator.py:302",
+        "ftl/proxy.py:15",
+        "ftl/proxy.py:135",
+        "ftl/proxy.py:137",
+        "ftl/proxy.py:143",
+        "ftl/proxy.py:180",
+        "ftl/proxy.py:210",
+        "ftl/proxy.py:225",
+        "ftl/proxy.py:259",
+        "ftl/proxy.py:306",
+        "ftl/proxy.py:308",
+        "ftl/proxy.py:325",
+        "ftl/proxy.py:328",
+        "ftl/proxy.py:331",
+        "ftl/proxy.py:347"
+      ],
+      "count": 41,
+      "files": [
+        "ftl/credentials.py",
+        "ftl/orchestrator.py",
+        "ftl/proxy.py"
+      ]
+    },
+    "ftl_overhead": {
+      "mock_agent_ms": 54.5,
+      "with_ftl_ms": 89.26,
+      "overhead_ms": 34.76,
+      "overhead_pct": 63.8
+    },
+    "reliability": {
+      "snapshot": {
+        "successes": 20,
+        "runs": 20
+      },
+      "shadow_map": {
+        "successes": 20,
+        "runs": 20
+      },
+      "linter": {
+        "successes": 20,
+        "runs": 20,
+        "deterministic": true
+      }
+    }
+  }
+}

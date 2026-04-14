@@ -8,6 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
+    ripgrep \
+    build-essential \
+    cmake \
+    golang-go \
+    openjdk-17-jdk \
+    maven \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22 LTS

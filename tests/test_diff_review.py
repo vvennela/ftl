@@ -138,3 +138,53 @@ def test_review_diff_can_return_continue(monkeypatch):
     )
 
     assert decision == "continue"
+
+
+def test_compute_diff_ignores_ftl_manifest_files(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    workspace = tmp_path / "workspace"
+    snapshot.mkdir()
+    workspace.mkdir()
+
+    (snapshot / ".ftl_manifest").write_text("stale\n")
+    (workspace / ".ftl_manifest").write_text("changed\n")
+    (snapshot / "app.py").write_text("print('a')\n")
+    (workspace / "app.py").write_text("print('b')\n")
+
+    diffs = diff_mod.compute_diff(snapshot, workspace)
+
+    assert [diff["path"] for diff in diffs] == ["app.py"]
+
+
+def test_compute_diff_from_overlay_uses_exists_in_snapshot_hint(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "app.py").write_text("before\n")
+
+    diffs = diff_mod.compute_diff_from_overlay(
+        [
+            {
+                "path": "new.py",
+                "deleted": False,
+                "exists_in_snapshot": False,
+                "content_b64": "cHJpbnQoJ25ldycpCg==",
+            },
+            {
+                "path": "app.py",
+                "deleted": False,
+                "exists_in_snapshot": True,
+                "content_b64": "YWZ0ZXIK",
+            },
+        ],
+        snapshot,
+    )
+
+    assert [(diff["path"], diff["status"]) for diff in diffs] == [
+        ("app.py", "modified"),
+        ("new.py", "created"),
+    ]
+
+
+def test_review_system_requires_terse_high_signal_output():
+    assert "high-signal language" in diff_mod._REVIEW_SYSTEM
+    assert "No filler" in diff_mod._REVIEW_SYSTEM

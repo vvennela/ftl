@@ -195,6 +195,8 @@ The shell prewarms the sandbox up front, so the first task starts in an already-
 
 FTL supports three coding agents. Select one during `ftl setup` or set `agent` in `.ftlconfig`.
 
+FTL can verify code in `Python`, `TypeScript`, `Go`, `Java`, and `C++`. It auto-detects the project language from common build files and source extensions. If detection fails, `ftl init` asks you which language the project uses. For mixed-language repos, set `language` explicitly in `.ftlconfig` or add `language_overrides` to map subdirectories like `backend` or `web` to different languages.
+
 | Agent | Key | Requires |
 |---|---|---|
 | Claude Code | `"claude-code"` | `ANTHROPIC_API_KEY` |
@@ -216,6 +218,11 @@ Inside the sandbox, FTL forwards `OPENAI_API_KEY` and bootstraps Codex's local l
 ```json
 {
   "agent": "claude-code",
+  "language": "python",
+  "language_overrides": {
+    "backend": "go",
+    "web": "typescript"
+  },
   "tester": "claude-haiku-4-5-20251001",
   "reviewer": "claude-haiku-4-5-20251001",
 
@@ -236,6 +243,8 @@ Inside the sandbox, FTL forwards `OPENAI_API_KEY` and bootstraps Codex's local l
 | Field | Default | Description |
 |---|---|---|
 | `agent` | `"claude-code"` | Agent to run: `"claude-code"`, `"codex"`, `"aider"` |
+| `language` | auto-detected | Override project language: `"python"`, `"typescript"`, `"go"`, `"java"`, `"cpp"` |
+| `language_overrides` | — | Optional path-to-language map for mixed repos, for example `{ "backend": "go", "web": "typescript" }` |
 | `tester` | `"claude-haiku-4-5-20251001"` | LiteLLM model string for adversarial test generation |
 | `reviewer` | `"claude-haiku-4-5-20251001"` | LiteLLM model for diff review: change summary, security scan (RCE, injection, etc.), and prompt adherence check. Runs in parallel with tests. |
 | `shadow_env` | `[]` | Extra env var names to shadow beyond what's in `.env` |
@@ -467,15 +476,15 @@ The agent runs entirely inside Docker. It never sees your real API keys or your 
 
 ## Benchmarking
 
-FTL's safety layer is effectively free in normal dev workflows. On benchmarked edit tasks, total overhead was **~60ms per task** for agent-driven work, or about **3.0%** wall-clock overhead:
+FTL's safety layer is effectively free in normal dev workflows. On benchmarked edit tasks, total overhead was **~291ms per task** for agent-driven work, or about **14.5%** wall-clock overhead:
 
 | Task | Without FTL | With FTL | FTL Overhead |
 |---|---|---|---|
-| Create 50-line file | 2.00s | 2.06s | 0.06s |
-| Modify 5 files | 2.01s | 2.07s | 0.06s |
-| Create 10 files | 2.01s | 2.07s | 0.06s |
+| Create 50-line file | 2.00s | 2.29s | 0.29s |
+| Modify 5 files | 2.01s | 2.30s | 0.29s |
+| Create 10 files | 2.01s | 2.30s | 0.29s |
 
-The underlying pipeline operations are also cheap. Medium-scale snapshots (100 files) averaged **31.7ms**, diff computation averaged **9.9ms**, and merge preparation averaged **16.0ms** across 5 runs. Docker warm execution averaged **55.7ms**.
+The underlying pipeline operations are also cheap. Medium-scale snapshots (100 files) averaged **26.0ms**, diff computation averaged **95.9ms**, and merge preparation averaged **134.3ms** across 5 runs. Docker warm execution averaged **66.3ms**.
 
 The benchmark run also showed that the protection mechanisms are not coming at the cost of quality:
 
@@ -486,7 +495,7 @@ The benchmark run also showed that the protection mechanisms are not coming at t
 - Snapshot, shadow-map, and linter reliability: **100.0% success** across 20 repeated runs
 - Container isolation: **0** unexpectedly accessible sensitive host paths
 
-In practice, that means you get sandboxing, credential shadowing, destructive-op blocking, and pre-merge review for roughly the cost of a few dozen milliseconds, which is below the threshold most developers will notice during an agent-driven edit loop.
+In practice, that means you get sandboxing, credential shadowing, destructive-op blocking, and pre-merge review for roughly the cost of a few hundred milliseconds, which is below the threshold most developers will notice during an agent-driven edit loop.
 
 Full benchmark artifacts live in `ftl_benchmarks.json` and `ftl_benchmarks_summary.md`.
 
@@ -542,8 +551,7 @@ FTL/
 │   │   ├── base.py              # Abstract agent interface
 │   │   ├── claude_code.py       # Claude Code adapter (stream-json output)
 │   │   ├── codex.py             # Codex adapter
-│   │   ├── aider.py             # Aider adapter
-│   │   └── kiro.py              # Kiro adapter
+│   │   └── aider.py             # Aider adapter
 │   ├── sandbox/
 │   │   ├── base.py              # Abstract sandbox interface
 │   │   └── docker.py            # Docker backend: persistent containers, Node.js pre-warm
@@ -576,7 +584,7 @@ FTL/
 - CloudWatch session tracing
 - Multi-agent support: Claude Code, Codex, Aider
 - `ftl setup` wizard — agent selection, tester model, Docker Hub pull
-- Published Docker Hub images (`vvenne/ftl:latest`, `:codex`, `:aider`, `:kiro`, `:full`)
+- Published Docker Hub images (`vvenne/ftl:latest`, `:codex`, `:aider`, `:full`)
 - Parallel reviewer — change summary, security scan (RCE, injection, deserialization, etc.), and prompt adherence check running in parallel with tests
 
 **Next:**

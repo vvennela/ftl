@@ -17,25 +17,25 @@ AGENT_IMAGES = {
     "claude-code": f"{_REGISTRY}:latest",
     "codex":       f"{_REGISTRY}:codex",
     "aider":       f"{_REGISTRY}:aider",
-    "kiro":        f"{_REGISTRY}:kiro",
 }
 _DEFAULT_IMAGE = f"{_REGISTRY}:latest"
 ENV_FILE = "/tmp/.ftl_env"
 DEFAULT_TIMEOUT = 3600  # 60 minutes (matches agent timeout)
 
 # Python script run inside the container to compare /workspace against the snapshot.
-# Runs entirely on the Linux side — no host-side Python/VirtioFS overhead per file.
-# Returns JSON list of {"path", "deleted", "content_b64"} matching compute_diff_from_overlay().
+# Uses a precomputed snapshot manifest so the hot path is one workspace walk plus
+# selective reads for changed files.
 _DIFF_SCRIPT_TMPL = """\
-import os, json, base64, hashlib
+import os, json, base64
 from pathlib import Path
 
 SNAP = Path('/mnt/snapshots/{snapshot_id}')
 WORK = Path('/workspace')
+MANIFEST = SNAP / '.ftl_manifest'
 IGNORE = {{'__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
            'node_modules', 'site-packages', 'venv', '.venv'}}
 SUFFIXES = ('.dist-info', '.egg-info', '.egg-link')
-SKIP_FILES = {{'_ftl_test.py', '_ftl_test.js', '.ftl_meta'}}
+SKIP_FILES = {{'_ftl_test.py', '_ftl_test.js', '.ftl_meta', '.ftl_manifest'}}
 
 def skip(rel):
     p = Path(rel)
@@ -46,42 +46,49 @@ def skip(rel):
             return True
     return False
 
-def digest(path):
-    h = hashlib.md5()
-    try:
-        with open(path, 'rb') as f:
-            for chunk in iter(lambda: f.read(65536), b''):
-                h.update(chunk)
-    except OSError:
-        return None
-    return h.hexdigest()
+snap_meta = {{}}
+try:
+    with open(MANIFEST, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\\n')
+            if not line:
+                continue
+            rel, size, mtime_ns = line.split('\\t')
+            if skip(rel):
+                continue
+            snap_meta[rel] = (int(size), int(mtime_ns))
+except OSError:
+    print('[]')
+    raise SystemExit(0)
 
-snap_files = {{
-    str(f.relative_to(SNAP))
-    for f in SNAP.rglob('*')
-    if f.is_file() and f.name != '.ftl_meta' and not skip(str(f.relative_to(SNAP)))
-}}
-work_files = {{
-    str(f.relative_to(WORK))
-    for f in WORK.rglob('*')
-    if f.is_file() and not skip(str(f.relative_to(WORK)))
-}}
+work_meta = {{}}
+for f in WORK.rglob('*'):
+    if not f.is_file():
+        continue
+    rel = str(f.relative_to(WORK))
+    if skip(rel):
+        continue
+    try:
+        stat = f.stat()
+    except OSError:
+        continue
+    work_meta[rel] = (stat.st_size, stat.st_mtime_ns)
 
 results = []
-for rel in sorted(snap_files - work_files):
+for rel in sorted(snap_meta.keys() - work_meta.keys()):
     results.append({{'path': rel, 'deleted': True}})
-for rel in sorted(work_files - snap_files):
+for rel in sorted(work_meta.keys() - snap_meta.keys()):
     try:
         content = open(WORK / rel, 'rb').read()
-        results.append({{'path': rel, 'deleted': False,
+        results.append({{'path': rel, 'deleted': False, 'exists_in_snapshot': False,
                          'content_b64': base64.b64encode(content).decode()}})
     except OSError:
         pass
-for rel in sorted(snap_files & work_files):
-    if digest(SNAP / rel) != digest(WORK / rel):
+for rel in sorted(snap_meta.keys() & work_meta.keys()):
+    if snap_meta[rel] != work_meta[rel]:
         try:
             content = open(WORK / rel, 'rb').read()
-            results.append({{'path': rel, 'deleted': False,
+            results.append({{'path': rel, 'deleted': False, 'exists_in_snapshot': True,
                              'content_b64': base64.b64encode(content).decode()}})
         except OSError:
             pass
@@ -334,8 +341,8 @@ class DockerSandbox(Sandbox):
             "-v", f"{snapshots_dir}:/mnt/snapshots:ro",
             "-w", "/workspace",
         ]
-        # Mount host AWS credentials so agents that need AWS (e.g. kiro-cli) can
-        # authenticate without requiring separate credential setup inside the container.
+        # Mount host AWS credentials so agents that use AWS-backed auth or services can
+        # authenticate without separate credential setup inside the container.
         aws_dir = Path.home() / ".aws"
         if aws_dir.is_dir():
             cmd += ["-v", f"{aws_dir}:/home/ftl/.aws:ro"]
@@ -377,19 +384,44 @@ class DockerSandbox(Sandbox):
         )
 
     def _init_workspace(self, snapshot_id, wipe=False):
-        """Populate /workspace from snapshot. If wipe=True, clears it first."""
+        """Populate /workspace from snapshot. If wipe=True, clears it first.
+
+        Fast path runs as the unprivileged sandbox user so we avoid a recursive
+        root-owned copy + chown on every refresh. Older containers may still
+        have root-owned files, so we fall back to the original root path only if
+        the user-level refresh fails.
+        """
         cmds = []
         if wipe:
             cmds.append("find /workspace -mindepth 1 -delete")
         cmds.extend([
+            f"cp -R /mnt/snapshots/{snapshot_id}/. /workspace/",
+            "rm -f /workspace/.ftl_meta",
+            "rm -f /workspace/.ftl_manifest",
+        ])
+
+        user_result = subprocess.run(
+            ["docker", "exec", "-u", "ftl", "-w", "/workspace", self.container_id, "sh", "-c", "; ".join(cmds)],
+            capture_output=True,
+            text=True,
+        )
+        if user_result.returncode == 0:
+            return
+
+        root_cmds = []
+        if wipe:
+            root_cmds.append("find /workspace -mindepth 1 -delete")
+        root_cmds.extend([
             f"cp -a /mnt/snapshots/{snapshot_id}/. /workspace/",
             "rm -f /workspace/.ftl_meta",
+            "rm -f /workspace/.ftl_manifest",
             "chown -R ftl:ftl /workspace",
         ])
-        result = self.exec_as_root("; ".join(cmds))
-        if result.returncode != 0:
+        root_result = self.exec_as_root("; ".join(root_cmds))
+        if root_result.returncode != 0:
             raise RuntimeError(
-                f"Failed to initialize workspace: {result.stderr or result.stdout}"
+                "Failed to initialize workspace: "
+                f"{root_result.stderr or root_result.stdout or user_result.stderr or user_result.stdout}"
             )
 
     def _is_alive(self, container_id):

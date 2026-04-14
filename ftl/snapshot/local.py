@@ -6,6 +6,7 @@ from ftl.snapshot.base import SnapshotStore
 from ftl.ignore import get_ignore_set
 
 SNAPSHOT_DIR = Path.home() / ".ftl" / "snapshots"
+MANIFEST_FILE = ".ftl_manifest"
 
 # Files/dirs always excluded from snapshots regardless of .ftlignore
 _RSYNC_EXCLUDES = [
@@ -30,9 +31,6 @@ class LocalSnapshotStore(SnapshotStore):
         snapshot_id = uuid.uuid4().hex[:8]
         snapshot_path = SNAPSHOT_DIR / snapshot_id
         snapshot_path.mkdir(parents=True, exist_ok=True)
-
-        # Write meta before copy so rsync picks it up
-        (snapshot_path / ".ftl_meta").write_text(str(project_path))
 
         # Build exclude args from hardcoded list + .ftlignore patterns
         ignore_set = get_ignore_set(project_path)
@@ -59,6 +57,8 @@ class LocalSnapshotStore(SnapshotStore):
             check=True,
             capture_output=True,
         )
+        (snapshot_path / ".ftl_meta").write_text(str(project_path))
+        self._write_manifest(snapshot_path)
 
         return snapshot_id
 
@@ -72,7 +72,7 @@ class LocalSnapshotStore(SnapshotStore):
         target = Path(target_path) if target_path else original_path
 
         for item in snapshot_path.rglob("*"):
-            if item.name == ".ftl_meta":
+            if item.name in {".ftl_meta", MANIFEST_FILE}:
                 continue
             relative = item.relative_to(snapshot_path)
             dest = target / relative
@@ -104,3 +104,15 @@ class LocalSnapshotStore(SnapshotStore):
         snapshot_path = SNAPSHOT_DIR / snapshot_id
         if snapshot_path.exists():
             shutil.rmtree(snapshot_path)
+
+    def _write_manifest(self, snapshot_path):
+        lines = []
+        for item in sorted(snapshot_path.rglob("*")):
+            if not item.is_file():
+                continue
+            if item.name in {".ftl_meta", MANIFEST_FILE}:
+                continue
+            rel = item.relative_to(snapshot_path)
+            stat = item.stat()
+            lines.append(f"{rel}\t{stat.st_size}\t{stat.st_mtime_ns}")
+        (snapshot_path / MANIFEST_FILE).write_text("\n".join(lines))

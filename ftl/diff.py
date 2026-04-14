@@ -36,12 +36,15 @@ def _is_binary(file_path):
 
 
 DIFF_IGNORE = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules", "site-packages", "venv", ".venv"}
+DIFF_SKIP_FILES = {".ftl_meta", ".ftl_manifest"}
 
 _DIFF_IGNORE_SUFFIXES = (".dist-info", ".egg-info", ".egg-link")
 
 
 def _should_ignore_in_diff(rel_path):
     """Filter out build artifacts from diffs."""
+    if rel_path.name in DIFF_SKIP_FILES:
+        return True
     for part in rel_path.parts:
         if part in DIFF_IGNORE:
             return True
@@ -58,7 +61,7 @@ def compute_diff(snapshot_path, workspace_path):
     snapshot_files = {
         f.relative_to(snapshot_path)
         for f in snapshot_path.rglob("*")
-        if f.is_file() and f.name != ".ftl_meta" and not _should_ignore_in_diff(f.relative_to(snapshot_path))
+        if f.is_file() and not _should_ignore_in_diff(f.relative_to(snapshot_path))
     }
     workspace_files = {
         f.relative_to(workspace_path)
@@ -140,14 +143,6 @@ def compute_diff_from_overlay(overlay_changes, snapshot_path):
     """
     snapshot_path = Path(snapshot_path)
 
-    snapshot_files = {
-        f.relative_to(snapshot_path)
-        for f in snapshot_path.rglob("*")
-        if f.is_file()
-        and f.name != ".ftl_meta"
-        and not _should_ignore_in_diff(f.relative_to(snapshot_path))
-    }
-
     diffs = []
 
     for change in overlay_changes:
@@ -176,7 +171,7 @@ def compute_diff_from_overlay(overlay_changes, snapshot_path):
             continue
 
         content_bytes = base64.b64decode(change["content_b64"])
-        status = "modified" if rel in snapshot_files else "created"
+        status = "modified" if change.get("exists_in_snapshot", True) else "created"
 
         # Binary detection: check extension or null bytes
         is_bin = rel.suffix.lower() in BINARY_EXTENSIONS or b"\x00" in content_bytes[:8192]
@@ -428,6 +423,9 @@ _FENCE_RE = re.compile(r"^```\w*\n?(.*?)```$", re.DOTALL)
 _REVIEW_SYSTEM = """\
 You are a senior security-focused code reviewer. Given the original task description and a diff, \
 produce a JSON object with exactly these three keys:
+
+Use terse, high-signal language. No filler, pleasantries, motivational framing, or repeated setup. \
+Keep every sentence necessary and easy to scan.
 
 "summary": A concise string — one or two sentences per changed file describing what it does. \
 Lead with the most significant change. Compress multiple small files into one sentence.

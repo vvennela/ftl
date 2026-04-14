@@ -22,6 +22,7 @@ from ftl.planner import generate_tests_from_task, run_test_code, run_verificatio
 from ftl.tracing import setup_langfuse, AgentHeartbeat
 from ftl.render import AgentRenderer
 from ftl.ui import StatusPulse, print_verdict
+from ftl.languages import resolve_language
 
 setup_langfuse()
 
@@ -45,7 +46,6 @@ def _try_start_proxy(swap_table):
 # Agent auth env vars to forward from host into sandbox.
 AGENT_AUTH_VARS = {
     "claude-code": ["ANTHROPIC_API_KEY"],
-    "kiro": ["KIRO_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"],
     "codex": ["OPENAI_API_KEY"],
     "aider": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],  # model-dependent
 }
@@ -110,6 +110,11 @@ class Session:
 
         self.agent_name = self.config.get("agent", "claude-code")
         self.tester = self.config.get("tester", "bedrock/us.anthropic.claude-sonnet-4-6")
+        self.language = resolve_language(
+            self.project_path,
+            self.config.get("language"),
+            self.config.get("language_overrides"),
+        ) or "python"
         self.trace_id = uuid.uuid4().hex[:8]
 
         self.sandbox = None
@@ -124,6 +129,8 @@ class Session:
         self.history = []
         self._proxy = None
         self._review = None
+        self._test_exit_code = None
+        self._test_output = None
 
     def _agent_context(self):
         """Context passed to agents that lack native session continuation."""
@@ -319,7 +326,7 @@ class Session:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             agent_future = executor.submit(_run_agent)
-            test_future = executor.submit(generate_tests_from_task, task, self.tester)
+            test_future = executor.submit(generate_tests_from_task, task, self.tester, self.language)
 
         try:
             agent_future.result()
@@ -334,11 +341,19 @@ class Session:
 
         # 6. Run tests — generation was parallel so test_future is usually
         #    already done by the time the agent finishes.
-        test_code = test_future.result()
-
         # Compute diff now — agent is done, sandbox state is final. Storing eagerly
         # so the reviewer and test runner can both start immediately.
         self.diffs = self.sandbox.get_diff(self.snapshot_path)
+        active_language = resolve_language(
+            self.project_path,
+            self.config.get("language"),
+            self.config.get("language_overrides"),
+            [diff["path"] for diff in self.diffs],
+        ) or self.language
+        test_code = test_future.result()
+        if active_language != self.language:
+            self.language = active_language
+            test_code = generate_tests_from_task(task, self.tester, self.language)
 
         # Run tests + reviewer in parallel. Both run while the user waits;
         # reviewer output is shown before the raw diff at merge time.
@@ -355,9 +370,12 @@ class Session:
             if test_code:
                 self.console.print("[bold]Running tests...[/bold]")
                 test_run_future = review_exec.submit(
-                    run_test_code, test_code, self.sandbox, self.console
+                    run_test_code, test_code, self.sandbox, self.console, self.language, self.project_path
                 )
-                test_run_future.result()
+                self._test_exit_code, self._test_output = test_run_future.result()
+            else:
+                self._test_exit_code = None
+                self._test_output = None
         elapsed = time.time() - checking_t0
         checking_status.stop(detail="tests + review" if review_future is not None and test_code else "review" if review_future is not None else "tests" if test_code else "quick")
         cloudwatch.emit(self.trace_id, "stage", "tests", elapsed_ms=elapsed * 1000)
@@ -405,6 +423,8 @@ class Session:
         self.diffs = self.sandbox.get_diff(self.snapshot_path)
         self._describe_follow_up(self._changed_paths_since(before, self.diffs), self.diffs)
         self._review = None
+        self._test_exit_code = None
+        self._test_output = None
 
     def show_diff(self):
         """Display the current diff."""
@@ -419,7 +439,16 @@ class Session:
         if not diffs:
             self.console.print("[dim]No changes to test.[/dim]")
             return
-        run_verification(diffs, self.tester, self.sandbox)
+        active_language = resolve_language(
+            self.project_path,
+            self.config.get("language"),
+            self.config.get("language_overrides"),
+            [diff["path"] for diff in diffs],
+        ) or self.language
+        result = run_verification(diffs, self.tester, self.sandbox, active_language, self.project_path)
+        if result:
+            self._test_exit_code, stdout, stderr = result
+            self._test_output = (stdout or "") + (stderr or "")
 
     def merge(self, allow_continue=True):
         """Approve and merge changes back to the project."""
@@ -430,6 +459,8 @@ class Session:
             return
 
         guardrail_id = self.config.get("guardrail_id", "")
+        test_failed = getattr(self, "_test_exit_code", None) not in (None, 0)
+
         if guardrail_id:
             # AWS mode: Bedrock Guardrails replaces local lint
             from ftl.guardrails import apply_guardrail
@@ -472,8 +503,13 @@ class Session:
                     f"[bold yellow]{self._review_warning_message(violations)}. "
                     "Proceeding to review.[/bold yellow]\n"
                 )
+        if test_failed:
+            self.console.print(
+                "[bold yellow]Review warning: verification failed. "
+                "Proceeding to human review.[/bold yellow]\n"
+            )
 
-        verdict = "warning" if violations else "ready"
+        verdict = "warning" if violations or test_failed else "ready"
         print_verdict(
             self.console,
             verdict,
@@ -552,6 +588,8 @@ class Session:
         self._review = None
         self.shadow_env = None
         self.history = []
+        self._test_exit_code = None
+        self._test_output = None
         self.task = None
 
     @property

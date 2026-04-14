@@ -42,6 +42,7 @@ def test_codex_follow_up_includes_session_context():
     assert "Current unmerged workspace diff" in command
     assert "validate_email(value)" in command
     assert "Add validation for blank email addresses." in command
+    assert "high-signal language" in command
     assert "smallest correct change" in command
     assert "one sensible thing" in command
 
@@ -83,8 +84,10 @@ def test_claude_prepends_ftl_engineering_policy():
     _, command, _ = sandbox.calls[0]
     assert "claude -p" in command
     assert "Fix the login redirect." in command
+    assert "high-signal language" in command
     assert "smallest correct change" in command
     assert "one sensible thing" in command
+    assert "modular code with clear responsibilities" in command
 
 
 def test_claude_follow_up_uses_native_continue_without_repeating_policy():
@@ -109,5 +112,6 @@ def test_aider_prepends_ftl_engineering_policy():
     _, command, _ = sandbox.calls[0]
     assert "aider --yes --no-git --message" in command
     assert "Add a missing null check." in command
+    assert "high-signal language" in command
     assert "smallest correct change" in command
     assert "one sensible thing" in command

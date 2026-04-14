@@ -92,3 +92,36 @@ def test_merge_uses_specific_warning_message_for_destructive_lint(monkeypatch):
     Session.merge(session)
 
     assert "Review warning: destructive operation detected" in stream.getvalue()
+
+
+def test_merge_marks_failed_tests_as_review_warning(monkeypatch):
+    stream = io.StringIO()
+    session = Session.__new__(Session)
+    session.console = Console(file=stream, force_terminal=False, color_system=None)
+    session.config = {}
+    session.shadow_env = {}
+    session.task = "add subtract helper"
+    session.snapshot_id = "snap12345"
+    session.project_path = "/tmp/project"
+    session.workspace = "/workspace"
+    session.sandbox = object()
+    session.agent = object()
+    session.trace_id = "trace1234"
+    session._review = None
+    session._test_exit_code = 1
+    session._test_output = "tests failed"
+    session._get_diffs = lambda: [{"path": "calc.py", "status": "modified", "lines": [("+", "def subtract(a, b): return a - b")]}]
+    session._agent_context = lambda: {}
+
+    monkeypatch.setattr("ftl.orchestrator.lint_diffs", lambda diffs, shadow_env=None, task="": [])
+    monkeypatch.setattr("ftl.orchestrator.display_violations", lambda violations: None)
+    monkeypatch.setattr("ftl.orchestrator.display_review", lambda review, console=None: None)
+    monkeypatch.setattr("ftl.orchestrator.review_diff", lambda *args, **kwargs: False)
+    monkeypatch.setattr("ftl.orchestrator.write_log", lambda entry, trace_id=None: None)
+    session._cleanup = lambda: None
+
+    Session.merge(session)
+
+    output = stream.getvalue()
+    assert "Review warning: verification failed" in output
+    assert "Decide: review required" in output

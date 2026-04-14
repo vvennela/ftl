@@ -82,3 +82,71 @@ def test_setup_prompts_for_anthropic_key_when_claude_selected(monkeypatch):
     assert result.exit_code == 0
     assert ("ANTHROPIC_API_KEY", "sk-ant-test") in saved_credentials
     assert prompts[:2] == ["Choice", "ANTHROPIC_API_KEY"]
+
+
+def test_init_prompts_for_language_when_detection_fails(monkeypatch, tmp_path):
+    prompts = []
+
+    def fake_prompt(text, **kwargs):
+        prompts.append(text)
+        return "go"
+
+    monkeypatch.setattr(cli, "find_config", lambda: None)
+    monkeypatch.setattr(cli, "detect_project_language", lambda path: None)
+    monkeypatch.setattr(cli.click, "prompt", fake_prompt)
+    monkeypatch.setattr(cli, "init_config", lambda language=None, **kwargs: tmp_path / ".ftlconfig")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["init"])
+
+    assert result.exit_code == 0
+    assert "Project language could not be detected" in prompts[0]
+
+
+def test_init_uses_detected_language_without_prompt(monkeypatch, tmp_path):
+    captured = {}
+
+    monkeypatch.setattr(cli, "find_config", lambda: None)
+    monkeypatch.setattr(cli, "detect_project_language", lambda path: "java")
+    monkeypatch.setattr(cli.click, "prompt", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prompt should not be called")))
+    monkeypatch.setattr(cli, "init_config", lambda language=None, **kwargs: captured.setdefault("language", language) or (tmp_path / ".ftlconfig"))
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["init"])
+
+    assert result.exit_code == 0
+    assert captured["language"] == "java"
+
+
+def test_init_prompts_for_primary_language_when_multiple_detected(monkeypatch, tmp_path):
+    prompts = []
+
+    def fake_prompt(text, **kwargs):
+        prompts.append(text)
+        if text == "This repo looks mixed. Setup mode":
+            return "primary"
+        return "typescript"
+
+    monkeypatch.setattr(cli, "find_config", lambda: None)
+    monkeypatch.setattr(cli, "detect_project_language", lambda path: None)
+    monkeypatch.setattr(cli, "detect_project_languages", lambda path: ["go", "typescript"])
+    monkeypatch.setattr(cli.click, "prompt", fake_prompt)
+    monkeypatch.setattr(cli, "init_config", lambda language=None, **kwargs: tmp_path / ".ftlconfig")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["init"])
+
+    assert result.exit_code == 0
+    assert prompts[0] == "This repo looks mixed. Setup mode"
+    assert "Multiple project languages detected" in prompts[1]
+
+
+def test_root_config_aws_shortcut_runs_one_shot_config(monkeypatch):
+    called = []
+
+    monkeypatch.setattr(cli, "_configure_aws", lambda: called.append("aws"))
+
+    result = CliRunner().invoke(cli.main, ["--config", "aws"])
+
+    assert result.exit_code == 0
+    assert called == ["aws"]

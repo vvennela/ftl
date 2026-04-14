@@ -1,5 +1,13 @@
 from abc import ABC, abstractmethod
 
+_COMMUNICATION_POLICY = """\
+FTL communication policy:
+- Use direct, high-signal language. No filler, pleasantries, or repeated framing.
+- Lead with the answer, bug, or decision. Keep explanations short unless detail is necessary.
+- Preserve exact technical terms, code, commands, paths, versions, and errors.
+- Prefer concise bullets over long paragraphs when they are easier to scan.
+"""
+
 _ENGINEERING_POLICY = """\
 FTL engineering policy:
 - Solve the task with the smallest correct change.
@@ -9,6 +17,8 @@ FTL engineering policy:
 - Follow the repository's existing conventions and architecture.
 - Write code that is easy for a human to read and review quickly.
 - Favor simple, well-organized functions that each do one sensible thing.
+- Prefer modular code with clear responsibilities, explicit names, and straightforward control flow.
+- Minimize hidden side effects and keep related logic close together.
 - Avoid speculative future-proofing, cleanup, and aesthetic overengineering.
 """
 
@@ -53,4 +63,4 @@ class Agent(ABC):
     def prepare_task(self, task):
         """Apply FTL's shared engineering policy to a user task."""
         task = task.strip()
-        return f"{task}\n\n{_ENGINEERING_POLICY}"
+        return f"{task}\n\n{_COMMUNICATION_POLICY}\n{_ENGINEERING_POLICY}"

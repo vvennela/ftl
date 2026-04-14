@@ -110,3 +110,64 @@ def test_lint_warns_for_allowed_js_sql_drop():
     assert len(violations) == 1
     assert violations[0].blocking is False
     assert "DROP TABLE" in violations[0].reason
+
+
+def test_lint_blocks_go_filesystem_delete_without_permission():
+    diffs = [
+        {
+            "path": "cleanup.go",
+            "status": "created",
+            "_content_bytes": b"package main\nimport \"os\"\nfunc main() { os.RemoveAll(\"/tmp/cache\") }\n",
+            "lines": [
+                ("+", "package main"),
+                ("+", "import \"os\""),
+                ("+", "func main() { os.RemoveAll(\"/tmp/cache\") }"),
+            ],
+        }
+    ]
+
+    violations = lint_diffs(diffs, task="add a status endpoint")
+
+    assert len(violations) == 1
+    assert violations[0].blocking is True
+    assert "Go os.Remove" in violations[0].reason
+
+
+def test_lint_warns_for_allowed_java_delete():
+    diffs = [
+        {
+            "path": "Cleanup.java",
+            "status": "created",
+            "_content_bytes": b"import java.nio.file.Files;\nclass Cleanup { void run() throws Exception { Files.deleteIfExists(null); } }\n",
+            "lines": [
+                ("+", "import java.nio.file.Files;"),
+                ("+", "class Cleanup { void run() throws Exception { Files.deleteIfExists(null); } }"),
+            ],
+        }
+    ]
+
+    violations = lint_diffs(diffs, task="delete the cache file after upload completes")
+
+    assert len(violations) == 1
+    assert violations[0].blocking is False
+    assert "Java Files.delete" in violations[0].reason
+
+
+def test_lint_blocks_cpp_filesystem_delete_without_permission():
+    diffs = [
+        {
+            "path": "cleanup.cpp",
+            "status": "created",
+            "_content_bytes": b"#include <filesystem>\nint main() { std::filesystem::remove_all(\"/tmp/cache\"); }\n",
+            "lines": [
+                ("+", "#include <filesystem>"),
+                ("+", "int main() { std::filesystem::remove_all(\"/tmp/cache\"); }"),
+            ],
+        }
+    ]
+
+    violations = lint_diffs(diffs, task="add a dashboard widget")
+
+    assert len(violations) == 1
+    assert violations[0].blocking is True
+    assert "C++ filesystem remove" in violations[0].reason

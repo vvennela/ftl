@@ -10,18 +10,41 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.table import Table
-from ftl.config import load_config, load_global_config, init_config, find_config, save_global_config
+from ftl.config import (
+    load_config,
+    load_global_config,
+    init_config,
+    find_config,
+    save_global_config,
+    load_project_config,
+    save_project_config,
+)
 from ftl.credentials import load_ftl_credentials, save_ftl_credential, FTL_CREDENTIALS_FILE
 from ftl.log import LOGS_FILE
 from ftl.orchestrator import run_task, Session
+from ftl.languages import (
+    detect_project_language,
+    detect_project_languages,
+    detect_top_level_languages,
+    SUPPORTED_LANGUAGES,
+)
 
 
 @click.group(invoke_without_command=True)
 @click.version_option(version="0.1.0")
+@click.option(
+    "--config",
+    "config_mode",
+    type=click.Choice(["aws"], case_sensitive=False),
+    help="One-shot config shortcut. Currently supports: aws",
+)
 @click.pass_context
-def main(ctx):
+def main(ctx, config_mode):
     """FTL: Zero-trust control plane for AI development."""
     load_ftl_credentials()
+    if config_mode == "aws":
+        _configure_aws()
+        return
     if ctx.invoked_subcommand is None:
         shell()
 
@@ -32,7 +55,7 @@ def init():
     if find_config():
         click.echo(".ftlconfig already exists.")
         return
-    config_path = init_config()
+    config_path = _init_project_config(Path.cwd())
     click.echo(f"Created {config_path}")
 
 
@@ -58,7 +81,7 @@ def code(task):
     Example: ftl code "create login component"
     """
     if not find_config():
-        init_config()
+        _init_project_config(Path.cwd())
     run_task(task)
 
 
@@ -222,6 +245,80 @@ def _has_saved_credential(key):
             if line.startswith(f"{key}="):
                 return True
     return False
+
+
+def _resolve_init_language(project_path):
+    """Auto-detect the project language, prompting only when detection is ambiguous."""
+    detected = detect_project_language(project_path)
+    if detected:
+        return detected
+
+    detected_languages = detect_project_languages(project_path)
+    options = sorted(SUPPORTED_LANGUAGES)
+    label = ", ".join(options)
+    if detected_languages:
+        prompt = (
+            "Multiple project languages detected "
+            f"({', '.join(detected_languages)}). Choose the primary verification language ({label})"
+        )
+    else:
+        prompt = f"Project language could not be detected. Choose one ({label})"
+    return click.prompt(
+        prompt,
+        type=click.Choice(options, case_sensitive=False),
+        default="python",
+        show_choices=False,
+    ).lower()
+
+
+def _prompt_language_map(project_path):
+    suggestions = detect_top_level_languages(project_path)
+    if not suggestions:
+        return {}
+
+    console = Console()
+    console.print("[bold]Language mapping[/bold]  [dim](optional for mixed repos)[/dim]")
+    console.print("  [dim]FTL can use different verification languages for different folders.[/dim]")
+
+    overrides = {}
+    for folder, suggested in sorted(suggestions.items()):
+        if click.confirm(f"  Map [cyan]{folder}/[/cyan] to [green]{suggested}[/green]?", default=True):
+            choice = click.prompt(
+                f"  Language for {folder}/",
+                type=click.Choice(sorted(SUPPORTED_LANGUAGES), case_sensitive=False),
+                default=suggested,
+                show_choices=False,
+            ).lower()
+            overrides[folder] = choice
+    return overrides
+
+
+def _init_project_config(target_path):
+    detected_languages = detect_project_languages(target_path)
+    language = detect_project_language(target_path)
+    overrides = {}
+
+    if language:
+        config_path = init_config(path=target_path, language=language)
+    else:
+        if detected_languages:
+            choice = click.prompt(
+                "This repo looks mixed. Setup mode",
+                type=click.Choice(["primary", "mapped"], case_sensitive=False),
+                default="mapped",
+                show_choices=False,
+            ).lower()
+            primary = _resolve_init_language(target_path)
+            if choice == "mapped":
+                overrides = _prompt_language_map(target_path)
+            config_path = init_config(path=target_path, language=primary)
+            if overrides:
+                save_project_config({"language_overrides": overrides}, config_path)
+        else:
+            primary = _resolve_init_language(target_path)
+            config_path = init_config(path=target_path, language=primary)
+
+    return config_path
 
 
 _AGENT_AUTH_PROMPTS = {
@@ -614,15 +711,58 @@ def _configure_aws():
     console.print(f"  [dim]{config_path}[/dim]")
 
 
-@main.command("config")
+@main.group("config", invoke_without_command=True)
 @click.option("--aws", "aws_mode", is_flag=True,
               help="Configure FTL to use AWS for snapshots, tracing, secrets, and guardrails.")
-def config_cmd(aws_mode):
-    """Configure FTL settings."""
-    if not aws_mode:
-        click.echo("Usage: ftl config --aws")
+@click.pass_context
+def config_cmd(ctx, aws_mode):
+    """View and update project config."""
+    if aws_mode:
+        _configure_aws()
         return
-    _configure_aws()
+    if ctx.invoked_subcommand is None:
+        config_show()
+
+
+@config_cmd.command("show")
+def config_show():
+    """Show the current project config."""
+    console = Console()
+    config_path = find_config()
+    if not config_path:
+        console.print("[red]No .ftlconfig found. Run 'ftl init' first.[/red]")
+        raise SystemExit(1)
+    console.print_json(data=load_project_config(config_path))
+
+
+@config_cmd.command("language")
+@click.argument("language", type=click.Choice(sorted(SUPPORTED_LANGUAGES), case_sensitive=False))
+def config_language(language):
+    """Set the primary project language."""
+    console = Console()
+    config_path = find_config()
+    if not config_path:
+        console.print("[red]No .ftlconfig found. Run 'ftl init' first.[/red]")
+        raise SystemExit(1)
+    save_project_config({"language": language.lower()}, config_path)
+    console.print(f"[green]Primary language set to {language.lower()}.[/green]")
+
+
+@config_cmd.command("map")
+@click.argument("path_prefix")
+@click.argument("language", type=click.Choice(sorted(SUPPORTED_LANGUAGES), case_sensitive=False))
+def config_map(path_prefix, language):
+    """Map a subdirectory to a language for mixed repos."""
+    console = Console()
+    config_path = find_config()
+    if not config_path:
+        console.print("[red]No .ftlconfig found. Run 'ftl init' first.[/red]")
+        raise SystemExit(1)
+    cfg = load_project_config(config_path)
+    overrides = dict(cfg.get("language_overrides", {}))
+    overrides[path_prefix.strip("/")] = language.lower()
+    save_project_config({"language_overrides": overrides}, config_path)
+    console.print(f"[green]Mapped {path_prefix.strip('/')}/ to {language.lower()}.[/green]")
 
 
 def shell():
@@ -632,7 +772,7 @@ def shell():
     if not find_config():
         console.print("[yellow]No .ftlconfig found in this directory.[/yellow]")
         if click.confirm("  Initialize FTL here?", default=True):
-            config_path = init_config()
+            config_path = _init_project_config(Path.cwd())
             console.print(f"  [green]Created {config_path}[/green]\n")
         else:
             raise SystemExit(0)
